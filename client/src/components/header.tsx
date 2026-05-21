@@ -3,20 +3,36 @@ import {
     Bell,
     HelpCircle,
     Search,
-    User
+    User,
+    Settings,
+    LogOut,
 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { useAuthStore } from '@/store/userStore'
 
 interface HeaderProps {
     onLoginClick: () => void
     isLoggedIn: boolean
+    onNavigate?: (menu: string) => void
 }
 
 export default function Header({
     onLoginClick,
-    isLoggedIn
+    isLoggedIn,
+    onNavigate
 }: HeaderProps) {
+    const user = useAuthStore((s) => s.user)
+    const logout = useAuthStore((s) => s.logout)
+
+    const avatarText = user?.nickname?.charAt(0) || user?.phone?.charAt(user.phone.length - 1) || '?'
+
     return (
         <header className="h-16 bg-background border-b flex items-center justify-between px-6 sticky top-0 z-30">
             {/* 左侧搜索 */}
@@ -41,11 +57,34 @@ export default function Header({
                 </Button>
 
                 {isLoggedIn ? (
-                    <Button variant="ghost" size="icon" className="ml-2">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center">
-                            <User className="w-4 h-4 text-white" />
-                        </div>
-                    </Button>
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="ml-2 rounded-full">
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white text-sm font-medium overflow-hidden">
+                                    {user?.avatar_url ? (
+                                        <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+                                    ) : (
+                                        avatarText
+                                    )}
+                                </div>
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem className="cursor-pointer" onClick={() => onNavigate?.('userPage')}>
+                                <User className="w-4 h-4" />
+                                个人中心
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                className="cursor-pointer text-red-500 focus:text-red-500"
+                                onClick={() => {
+                                    logout()
+                                }}
+                            >
+                                <LogOut className="w-4 h-4" />
+                                退出登录
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                 ) : (
                     <Button
                         onClick={onLoginClick}

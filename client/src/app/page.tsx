@@ -1,17 +1,21 @@
 "use client"
 
-import Image from "next/image";
 import { useState } from "react";
 import Header from "@/components/header";
 import Login from "@/components/login";
 import Sidebar from "@/components/sidebar";
 import CreatePage from "@/components/createPage";
 import MainPage from "@/components/mainPage";
+import UserPage from "@/components/userPage/userPage";
+import WorksPage from "@/components/worksPage";
+import PromptsPage from "@/components/promptsPage";
+import MaterialsPage from "@/components/materialsPage";
+import { useAuthStore } from "@/store/userStore";
 
 export default function Home() {
 	const [activeMenu, setActiveMenu] = useState("create")
 	const [showLogin, setShowLogin] = useState(false)
-	const [isLoggedIn] = useState(false)
+	const { user, token, setAuth } = useAuthStore()
 
 	const renderContent = () => {
 		switch (activeMenu) {
@@ -19,6 +23,15 @@ export default function Home() {
 				return <CreatePage />
 			case "home":
 				return <MainPage />
+			case "works":
+				return <WorksPage />
+			case "prompts":
+				return <PromptsPage />
+			case "materials":
+				return <MaterialsPage />
+			case "review":
+			case "userPage":
+				return <UserPage />
 			default:
 				return (
 					<div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -41,7 +54,8 @@ export default function Home() {
 				{/* 固定头部 */}
 				<Header
 					onLoginClick={() => setShowLogin(true)}
-					isLoggedIn={isLoggedIn}
+					isLoggedIn={!!user}
+					onNavigate={setActiveMenu}
 				/>
 
 				{/* 内容区域 */}
