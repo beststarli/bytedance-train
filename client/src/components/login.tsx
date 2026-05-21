@@ -5,74 +5,116 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { api } from '@/api/api'
+import { useAuthStore } from '@/store/userStore'
 
 interface LoginProps {
     open: boolean
     onOpenChange: (open: boolean) => void
 }
 
-export default function Login({
-    open,
-    onOpenChange
-}: LoginProps) {
+export default function Login({ open, onOpenChange }: LoginProps) {
+    const setAuth = useAuthStore((s) => s.setAuth)
+
     const [phone, setPhone] = useState("")
     const [verifyCode, setVerifyCode] = useState("")
     const [accountPhone, setAccountPhone] = useState("")
     const [password, setPassword] = useState("")
     const [agreed, setAgreed] = useState(false)
     const [countdown, setCountdown] = useState(0)
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState("")
 
-    const handleSendCode = () => {
+    const handleSendCode = async () => {
         if (!phone || countdown > 0) return
-        // 模拟发送验证码
-        setCountdown(60)
-        const timer = setInterval(() => {
-            setCountdown((prev) => {
-                if (prev <= 1) {
-                    clearInterval(timer)
-                    return 0
-                }
-                return prev - 1
+        setError("")
+        try {
+            await api('/api/auth/send-code', {
+                method: 'POST',
+                body: JSON.stringify({ phone }),
             })
-        }, 1000)
+            setCountdown(60)
+            const timer = setInterval(() => {
+                setCountdown((prev) => {
+                    if (prev <= 1) {
+                        clearInterval(timer)
+                        return 0
+                    }
+                    return prev - 1
+                })
+            }, 1000)
+        } catch (err: any) {
+            setError(err.message)
+        }
     }
 
-    const handlePhoneLogin = () => {
+    const handlePhoneLogin = async () => {
         if (!phone || !verifyCode || !agreed) return
-        console.log("[v0] Phone login:", { phone, verifyCode })
-        onOpenChange(false)
+        setError("")
+        setLoading(true)
+        try {
+            const data = await api<{ token: string; user: any }>('/api/auth/login', {
+                method: 'POST',
+                body: JSON.stringify({ phone, code: verifyCode }),
+            })
+            setAuth(data.user, data.token)
+            onOpenChange(false)
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setLoading(false)
+        }
     }
 
-    const handlePasswordLogin = () => {
+    const handlePasswordLogin = async () => {
         if (!accountPhone || !password || !agreed) return
-        console.log("[v0] Password login:", { accountPhone, password })
-        onOpenChange(false)
+        setError("")
+        setLoading(true)
+        try {
+            const data = await api<{ token: string; user: any }>('/api/auth/login-password', {
+                method: 'POST',
+                body: JSON.stringify({ account: accountPhone, password }),
+            })
+            setAuth(data.user, data.token)
+            onOpenChange(false)
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setLoading(false)
+        }
     }
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-[440px] p-0 overflow-hidden">
-                <DialogHeader className="px-6 pt-6 pb-2">
+            <DialogContent className="sm:max-w-[440px] p-4 overflow-hidden">
+                <DialogHeader className="px-6 pt-6">
                     <DialogTitle className="text-xl font-bold text-center">登录后内容更精彩</DialogTitle>
                 </DialogHeader>
 
+                {error && (
+                    <div className="px-8 text-sm text-red-500 text-center">{error}</div>
+                )}
+
                 <Tabs defaultValue="phone" className="w-full">
-                    <TabsList className="w-full h-12 bg-transparent border-b rounded-none p-0">
+                    <TabsList
+                        variant="line"
+                        className="w-full h-12 bg-transparent border-b rounded-none p-0"
+                    >
                         <TabsTrigger
                             value="phone"
-                            className="flex-1 h-full rounded-none border-b-2 border-transparent data-[state=active]:border-red-500 data-[state=active]:text-red-500 data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                            className="flex-1 h-full rounded-none border-b-2 border-transparent data-[state=active]:text-red-500 data-[state=active]:bg-transparent data-[state=active]:shadow-none"
                         >
                             手机验证码登录
                         </TabsTrigger>
                         <TabsTrigger
                             value="password"
-                            className="flex-1 h-full rounded-none border-b-2 border-transparent data-[state=active]:border-red-500 data-[state=active]:text-red-500 data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                            className="flex-1 h-full rounded-none border-b-2 border-transparent data-[state=active]:text-red-500 data-[state=active]:bg-transparent data-[state=active]:shadow-none"
                         >
                             密码登录
                         </TabsTrigger>
                     </TabsList>
 
-                    <TabsContent value="phone" className="px-6 py-4 mt-0">
+                    <TabsContent value="phone" className="px-8 py-4 mt-0">
                         <div className="space-y-4">
                             <div className="flex gap-2">
                                 <div className="flex items-center px-3 bg-muted rounded-md border text-sm text-muted-foreground">
@@ -121,15 +163,15 @@ export default function Login({
 
                             <Button
                                 onClick={handlePhoneLogin}
-                                disabled={!phone || !verifyCode || !agreed}
+                                disabled={!phone || !verifyCode || !agreed || loading}
                                 className="w-full h-11 bg-red-500 hover:bg-red-600 text-white"
                             >
-                                登录
+                                {loading ? "登录中..." : "登录"}
                             </Button>
                         </div>
                     </TabsContent>
 
-                    <TabsContent value="password" className="px-6 py-4 mt-0">
+                    <TabsContent value="password" className="px-8 py-4 mt-0">
                         <div className="space-y-4">
                             <Input
                                 type="text"
@@ -164,21 +206,14 @@ export default function Login({
 
                             <Button
                                 onClick={handlePasswordLogin}
-                                disabled={!accountPhone || !password || !agreed}
+                                disabled={!accountPhone || !password || !agreed || loading}
                                 className="w-full h-11 bg-red-500 hover:bg-red-600 text-white"
                             >
-                                登录
+                                {loading ? "登录中..." : "登录"}
                             </Button>
                         </div>
                     </TabsContent>
                 </Tabs>
-
-                <div className="px-6 pb-6 pt-2">
-                    <div className="text-center text-xs text-muted-foreground">
-                        还没有账号？
-                        <a href="#" className="text-red-500 hover:underline ml-1">立即注册</a>
-                    </div>
-                </div>
             </DialogContent>
         </Dialog>
     )
