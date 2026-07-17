@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Header from "@/components/header";
 import Login from "@/components/login";
 import Sidebar from "@/components/sidebar";
@@ -8,21 +8,31 @@ import CreatePage from "@/components/createPage";
 import MainPage from "@/components/mainPage";
 import UserPage from "@/components/userPage/userPage";
 import WorksPage from "@/components/worksPage";
-import PromptsPage from "@/components/promptsPage";
+import PromptsPage from "@/components/promptPage/promptsPage";
 import MaterialsPage from "@/components/materialsPage";
+import ReviewPage from "@/components/reviewPage";
 import { useAuthStore } from "@/store/userStore";
+import { restoreSession } from "@/api/api";
 
 export default function Home() {
-	const [activeMenu, setActiveMenu] = useState("create")
+	const [activeMenu, setActiveMenu] = useState("dashboard")
 	const [showLogin, setShowLogin] = useState(false)
-	const { user, token, setAuth } = useAuthStore()
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+	const user = useAuthStore((state) => state.user)
+
+	useEffect(() => {
+		void restoreSession()
+	}, [])
 
 	const renderContent = () => {
-		switch (activeMenu) {
+		const [menu, subview] = activeMenu.split(":")
+		switch (menu) {
 			case "create":
-				return <CreatePage />
-			case "home":
-				return <MainPage />
+				return <CreatePage initialMode={subview === "manual" || subview === "ai" ? subview : undefined} />
+			case "dashboard":
+				return <MainPage onNavigate={setActiveMenu} />
+			case "inspiration":
+				return <MainPage onNavigate={setActiveMenu} mode={menu} />
 			case "works":
 				return <WorksPage />
 			case "prompts":
@@ -30,8 +40,9 @@ export default function Home() {
 			case "materials":
 				return <MaterialsPage />
 			case "review":
+				return <ReviewPage />
 			case "userPage":
-				return <UserPage />
+				return <UserPage onNavigate={setActiveMenu} />
 			default:
 				return (
 					<div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -47,10 +58,15 @@ export default function Home() {
 	return (
 		<div className="min-h-screen bg-muted/30">
 			{/* 左侧导航栏 */}
-			<Sidebar activeMenu={activeMenu} onMenuChange={setActiveMenu} />
+			<Sidebar
+				activeMenu={activeMenu}
+				onMenuChange={setActiveMenu}
+				collapsed={sidebarCollapsed}
+				onCollapsedChange={setSidebarCollapsed}
+			/>
 
 			{/* 右侧主内容区 */}
-			<div className="ml-56 min-h-screen flex flex-col">
+			<div className={`min-h-screen flex flex-col pb-16 transition-[margin] duration-200 lg:pb-0 ${sidebarCollapsed ? "lg:ml-[72px]" : "lg:ml-60"}`}>
 				{/* 固定头部 */}
 				<Header
 					onLoginClick={() => setShowLogin(true)}

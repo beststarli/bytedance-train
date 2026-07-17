@@ -23,11 +23,26 @@
       created_at    TIMESTAMPTZ DEFAULT NOW()
   );
 
+  -- Refresh Token 会话（仅保存摘要，泄露数据库时不会暴露原始令牌）
+  CREATE TABLE refresh_tokens (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      jti           UUID UNIQUE NOT NULL,
+      token_hash    CHAR(64) UNIQUE NOT NULL,
+      expires_at    TIMESTAMPTZ NOT NULL,
+      revoked_at    TIMESTAMPTZ,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+  CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
+
   -- 聊天会话
   CREATE TABLE chats (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title         VARCHAR(200) NOT NULL DEFAULT '新对话',
+      summary       TEXT,                    -- 历史对话摘要（长对话压缩）
       created_at    TIMESTAMPTZ DEFAULT NOW(),
       updated_at    TIMESTAMPTZ DEFAULT NOW()
   );

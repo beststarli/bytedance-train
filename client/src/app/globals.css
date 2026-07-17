@@ -49,38 +49,38 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.975 0.006 255);
+  --foreground: oklch(0.22 0.025 258);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --primary: oklch(0.61 0.245 22);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.958 0.009 255);
+  --muted-foreground: oklch(0.53 0.026 258);
+  --accent: oklch(0.965 0.018 22);
+  --accent-foreground: oklch(0.55 0.22 22);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
+  --border: oklch(0.91 0.012 255);
+  --input: oklch(0.91 0.012 255);
+  --ring: oklch(0.68 0.19 22);
+  --chart-1: oklch(0.64 0.23 22);
+  --chart-2: oklch(0.68 0.15 244);
+  --chart-3: oklch(0.75 0.16 88);
+  --chart-4: oklch(0.68 0.15 155);
+  --chart-5: oklch(0.62 0.14 300);
+  --radius: 0.5rem;
+  --sidebar: oklch(0.99 0.003 255);
   --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary: oklch(0.61 0.245 22);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-accent: oklch(0.965 0.018 22);
+  --sidebar-accent-foreground: oklch(0.55 0.22 22);
+  --sidebar-border: oklch(0.91 0.012 255);
+  --sidebar-ring: oklch(0.68 0.19 22);
 }
 
 .dark {
@@ -121,10 +121,45 @@
   * {
     @apply border-border outline-ring/50;
   }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
   body {
     @apply bg-background text-foreground;
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    letter-spacing: -0.01em;
   }
   html {
     @apply font-sans;
   }
+}
+
+@layer utilities {
+  .workspace-card {
+    @apply rounded-lg border border-border/80 bg-card shadow-[0_1px_2px_rgba(24,32,56,0.03),0_6px_20px_rgba(24,32,56,0.025)];
+  }
+
+  .workspace-label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground;
+  }
+
+  .focus-red {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 focus-visible:ring-offset-2;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .enter-workspace {
+    animation: enter-workspace 420ms cubic-bezier(.2,.8,.2,1) both;
+  }
+}
+
+@keyframes enter-workspace {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }

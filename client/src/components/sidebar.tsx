@@ -1,75 +1,134 @@
 import React from 'react'
 import {
-    PenSquare,
     Home,
     FileText,
     Sparkles,
     FolderOpen,
     Shield,
-    User,
     PlusSquare,
+    Compass,
+    UserRound,
+    WandSparkles,
+    ChevronLeft,
+    ChevronRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface SidebarProps {
     activeMenu: string
     onMenuChange: (menu: string) => void
+    collapsed: boolean
+    onCollapsedChange: (collapsed: boolean) => void
 }
 
 const menuItems = [
-    { id: "create", label: "开始创作", icon: PlusSquare, highlight: true },
-    { id: "home", label: "热点爆文", icon: Home },
+    { id: "dashboard", label: "首页", icon: Home },
     { id: "works", label: "作品管理", icon: FileText },
-    { id: "prompts", label: "提示词管理", icon: Sparkles },
-    { id: "materials", label: "素材管理", icon: FolderOpen },
+    { id: "materials", label: "素材库", icon: FolderOpen },
+    { id: "prompts", label: "Prompt 模板", icon: PlusSquare },
     { id: "review", label: "内容审核", icon: Shield },
-    { id: "userPage", label: "个人中心", icon: User },
+    { id: "inspiration", label: "创作灵感", icon: Compass },
+    { id: "userPage", label: "个人中心", icon: UserRound },
 ]
 
-export default function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
+export default function Sidebar({ activeMenu, onMenuChange, collapsed, onCollapsedChange }: SidebarProps) {
     return (
-        <aside className="w-56 h-screen bg-background border-r flex flex-col fixed left-0 top-0 z-40">
+        <>
+        <aside className={cn(
+            "fixed left-0 top-0 z-40 hidden h-screen flex-col border-r bg-white transition-[width] duration-200 lg:flex",
+            collapsed ? "w-[72px]" : "w-60",
+        )}>
             {/* Logo */}
-            <div className="h-16 flex items-center px-4 border-b">
-                <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center">
-                        <span className="text-white font-bold text-sm">头条</span>
+            <div className={cn("flex h-[72px] items-center border-b", collapsed ? "justify-center px-0" : "justify-between px-5")}>
+                <div className="flex min-w-0 items-center gap-3">
+                    <div className="w-9 h-9 bg-[#f5222d] rounded-lg flex items-center justify-center shadow-[0_6px_14px_rgba(245,34,45,.18)]">
+                        <span className="text-white font-black text-sm tracking-tight">头条</span>
                     </div>
-                    <span className="font-semibold text-sm">AI创作者中心</span>
+                    {!collapsed && <div className="whitespace-nowrap font-bold text-lg tracking-tight">AI创作中心</div>}
                 </div>
             </div>
 
+            <div className={cn("pt-4", collapsed ? "px-0" : "px-3")}>
+                <button
+                    type="button"
+                    title={collapsed ? "开始创作" : undefined}
+                    onClick={() => onMenuChange("create")}
+                    className={cn(
+                        "focus-red flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#f5222d] text-sm font-semibold text-white shadow-[0_6px_14px_rgba(245,34,45,.14)] transition-colors hover:bg-[#df1722]",
+                        collapsed && "mx-auto h-10 w-10 p-0",
+                        activeMenu === "create" && "bg-[#d91420]",
+                    )}
+                >
+                    <WandSparkles className="h-[18px] w-[18px]" />
+                    {!collapsed && "开始创作"}
+                </button>
+            </div>
+
             {/* 导航菜单 */}
-            <nav className="flex-1 py-4 overflow-y-auto">
-                <ul className="space-y-1 px-2">
+            <nav className="flex-1 overflow-y-auto py-4">
+                {!collapsed && <div className="px-5 mb-3 workspace-label">创作空间</div>}
+                <ul className={cn("space-y-1", collapsed ? "px-0" : "px-3")}>
                     {menuItems.map((item) => (
                         <li key={item.id}>
                             <button
+                                type="button"
+                                title={collapsed ? item.label : undefined}
                                 onClick={() => onMenuChange(item.id)}
                                 className={cn(
-                                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors",
-                                    item.highlight && activeMenu !== item.id && "bg-red-500 text-white hover:bg-red-600",
-                                    item.highlight && activeMenu === item.id && "bg-red-600 text-white",
-                                    !item.highlight && activeMenu === item.id && "bg-red-50 text-red-500",
-                                    !item.highlight && activeMenu !== item.id && "hover:bg-muted text-foreground"
+                                    "focus-red group flex w-full items-center rounded-lg py-2.5 text-sm transition-all",
+                                    collapsed ? "mx-auto h-10 w-10 justify-center p-0" : "gap-3 px-3",
+                                    activeMenu === item.id
+                                        ? "bg-red-50 text-red-600 font-semibold shadow-[inset_3px_0_0_#f5222d]"
+                                        : "hover:bg-muted text-muted-foreground hover:text-foreground"
                                 )}
                             >
-                                <item.icon className="w-5 h-5" />
-                                <span>{item.label}</span>
+                                <item.icon className={cn("w-[18px] h-[18px]", activeMenu === item.id && "text-red-500")} />
+                                {!collapsed && <span>{item.label}</span>}
                             </button>
                         </li>
                     ))}
                 </ul>
             </nav>
 
-            {/* 底部版权信息 */}
-            <footer className="p-2 text-center flex flex-col gap-1 text-sm text-slate-300 ">
-                <div className=''>
-                    <div>CopyRight © BestStar. </div>
-                    <div>All rights reserved.</div>
+            {!collapsed && <div className="mx-3 mb-3 rounded-lg border bg-muted/70 p-3.5 text-xs text-muted-foreground">
+                <div className="font-semibold text-foreground mb-1">创作系统运行正常</div>
+                <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    AI 服务与审核服务已连接
                 </div>
-                <div>字节跳动2026工程训练营项目</div>
-            </footer>
+            </div>}
+
+            {/* 底部版权信息 */}
+            {!collapsed && <footer className="border-t px-4 py-3 text-center text-[10px] leading-4 text-muted-foreground/70">
+                <div>Copyright © BestStar. All rights reserved.</div>
+                <div>字节跳动 2026 工程训练营项目</div>
+            </footer>}
+
+            <button
+                type="button"
+                onClick={() => onCollapsedChange(!collapsed)}
+                aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
+                className="focus-red absolute -right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg border bg-white text-muted-foreground shadow-sm hover:text-foreground"
+            >
+                {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
+            </button>
         </aside>
+        <nav className="fixed inset-x-0 bottom-0 z-50 grid h-16 grid-cols-5 border-t bg-background/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden">
+            {[menuItems[0], { id: "create", label: "开始创作", icon: Sparkles }, ...menuItems.slice(1, 4)].map((item) => (
+                <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onMenuChange(item.id)}
+                    className={cn(
+                        "focus-red flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg text-[10px]",
+                        activeMenu === item.id ? "text-red-600" : "text-muted-foreground",
+                    )}
+                >
+                    <item.icon className="h-[18px] w-[18px]" />
+                    <span className="max-w-full truncate">{item.label}</span>
+                </button>
+            ))}
+        </nav>
+        </>
     )
 }

@@ -1,11 +1,63 @@
 import { Router, Request, Response } from 'express'
-import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { pool } from '../utils/db'
-import { signToken, verifyToken } from '../utils/jwt'
+import {
+	getRefreshTokenExpiresAt,
+	signAccessToken,
+	signRefreshToken,
+	verifyRefreshToken,
+} from '../utils/jwt'
+import { authMiddleware } from '../middleware/auth'
 
 const router: Router = Router()
+const REFRESH_COOKIE = 'refresh_token'
+const isProduction = process.env.NODE_ENV === 'production'
+
+function hashToken(token: string) {
+	return createHash('sha256').update(token).digest('hex')
+}
+
+function readCookie(req: Request, name: string) {
+	const cookies = req.headers.cookie?.split(';') ?? []
+	for (const cookie of cookies) {
+		const [key, ...value] = cookie.trim().split('=')
+		if (key === name) return decodeURIComponent(value.join('='))
+	}
+	return undefined
+}
+
+function setRefreshCookie(res: Response, token: string) {
+	res.cookie(REFRESH_COOKIE, token, {
+		httpOnly: true,
+		secure: isProduction,
+		sameSite: 'lax',
+		path: '/api/auth',
+		expires: getRefreshTokenExpiresAt(token),
+	})
+}
+
+function clearRefreshCookie(res: Response) {
+	res.clearCookie(REFRESH_COOKIE, {
+		httpOnly: true,
+		secure: isProduction,
+		sameSite: 'lax',
+		path: '/api/auth',
+	})
+}
+
+async function createSession(user: { id: string; phone: string }, res: Response) {
+	const accessToken = signAccessToken({ userId: user.id, phone: user.phone })
+	const { token: refreshToken, jti } = signRefreshToken({ userId: user.id, phone: user.phone })
+	await pool.query(
+		`INSERT INTO refresh_tokens (user_id, jti, token_hash, expires_at)
+		 VALUES ($1, $2, $3, $4)`,
+		[user.id, jti, hashToken(refreshToken), getRefreshTokenExpiresAt(refreshToken)]
+	)
+	setRefreshCookie(res, refreshToken)
+	return accessToken
+}
 
 // 生成 6 位随机验证码
 function generateCode(): string {
@@ -112,10 +164,10 @@ router.post('/login', async (req: Request, res: Response) => {
 		await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id])
 
 		// 生成 token
-		const token = signToken({ userId: user.id, phone: user.phone })
+		const accessToken = await createSession(user, res)
 
 		res.json({
-			token,
+			accessToken,
 			user: {
 				id: user.id,
 				phone: user.phone,
@@ -131,21 +183,8 @@ router.post('/login', async (req: Request, res: Response) => {
 })
 
 // 获取当前用户信息（用于前端刷新后恢复登录态）
-router.get('/me', async (req: Request, res: Response) => {
-	const header = req.headers.authorization
-	if (!header?.startsWith('Bearer ')) {
-		res.status(401).json({ error: '未登录' })
-		return
-	}
-
-	let userId: string
-	try {
-		userId = verifyToken(header.slice(7)).userId
-	} catch {
-		res.status(401).json({ error: 'token 已过期或无效' })
-		return
-	}
-
+router.get('/me', authMiddleware, async (req: Request, res: Response) => {
+	const userId = req.user!.userId
 	const { rows } = await pool.query(
 		'SELECT id, phone, nickname, avatar_url FROM users WHERE id = $1',
 		[userId]
@@ -160,21 +199,8 @@ router.get('/me', async (req: Request, res: Response) => {
 })
 
 // 更新用户资料
-router.put('/profile', async (req: Request, res: Response) => {
-	const header = req.headers.authorization
-	if (!header?.startsWith('Bearer ')) {
-		res.status(401).json({ error: '未登录' })
-		return
-	}
-
-	let userId: string
-	try {
-		userId = verifyToken(header.slice(7)).userId
-	} catch {
-		res.status(401).json({ error: 'token 已过期或无效' })
-		return
-	}
-
+router.put('/profile', authMiddleware, async (req: Request, res: Response) => {
+	const userId = req.user!.userId
 	const { nickname, email, avatar_url } = req.body
 	const updates: string[] = []
 	const values: any[] = []
@@ -212,21 +238,8 @@ router.put('/profile', async (req: Request, res: Response) => {
 })
 
 // 上传头像（base64）
-router.post('/avatar', async (req: Request, res: Response) => {
-	const header = req.headers.authorization
-	if (!header?.startsWith('Bearer ')) {
-		res.status(401).json({ error: '未登录' })
-		return
-	}
-
-	let userId: string
-	try {
-		userId = verifyToken(header.slice(7)).userId
-	} catch {
-		res.status(401).json({ error: 'token 已过期或无效' })
-		return
-	}
-
+router.post('/avatar', authMiddleware, async (req: Request, res: Response) => {
+	const userId = req.user!.userId
 	const { image } = req.body
 	if (!image || !image.startsWith('data:image/')) {
 		res.status(400).json({ error: '图片格式不正确' })
@@ -274,21 +287,8 @@ router.post('/avatar', async (req: Request, res: Response) => {
 })
 
 // 设置/修改密码
-router.put('/password', async (req: Request, res: Response) => {
-	const header = req.headers.authorization
-	if (!header?.startsWith('Bearer ')) {
-		res.status(401).json({ error: '未登录' })
-		return
-	}
-
-	let userId: string
-	try {
-		userId = verifyToken(header.slice(7)).userId
-	} catch {
-		res.status(401).json({ error: 'token 已过期或无效' })
-		return
-	}
-
+router.put('/password', authMiddleware, async (req: Request, res: Response) => {
+	const userId = req.user!.userId
 	const { old_password, new_password } = req.body
 
 	if (!new_password || new_password.length < 6) {
@@ -355,10 +355,10 @@ router.post('/login-password', async (req: Request, res: Response) => {
 
 		await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id])
 
-		const token = signToken({ userId: user.id, phone: user.phone })
+		const accessToken = await createSession(user, res)
 
 		res.json({
-			token,
+			accessToken,
 			user: {
 				id: user.id,
 				phone: user.phone,
@@ -371,6 +371,76 @@ router.post('/login-password', async (req: Request, res: Response) => {
 		console.error('密码登录失败:', err)
 		res.status(500).json({ error: '登录失败' })
 	}
+})
+
+// Refresh Token 轮换：旧令牌只可使用一次。
+router.post('/refresh', async (req: Request, res: Response) => {
+	const refreshToken = readCookie(req, REFRESH_COOKIE)
+	if (!refreshToken) {
+		res.status(401).json({ error: '登录已过期，请重新登录' })
+		return
+	}
+
+	const client = await pool.connect()
+	try {
+		const payload = verifyRefreshToken(refreshToken)
+		await client.query('BEGIN')
+		const { rows } = await client.query(
+			`SELECT id, user_id FROM refresh_tokens
+			 WHERE jti = $1 AND token_hash = $2 AND revoked_at IS NULL AND expires_at > NOW()
+			 FOR UPDATE`,
+			[payload.jti, hashToken(refreshToken)]
+		)
+		if (!rows[0]) {
+			await client.query('ROLLBACK')
+			clearRefreshCookie(res)
+			res.status(401).json({ error: '会话无效，请重新登录' })
+			return
+		}
+
+		await client.query('UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1', [rows[0].id])
+		const { rows: users } = await client.query(
+			'SELECT id, phone, email, nickname, avatar_url FROM users WHERE id = $1 AND status = $2',
+			[payload.userId, 'active']
+		)
+		const user = users[0]
+		if (!user) {
+			await client.query('ROLLBACK')
+			clearRefreshCookie(res)
+			res.status(401).json({ error: '用户不存在或已停用' })
+			return
+		}
+
+		const accessToken = signAccessToken({ userId: user.id, phone: user.phone })
+		const nextRefresh = signRefreshToken({ userId: user.id, phone: user.phone })
+		await client.query(
+			`INSERT INTO refresh_tokens (user_id, jti, token_hash, expires_at)
+			 VALUES ($1, $2, $3, $4)`,
+			[user.id, nextRefresh.jti, hashToken(nextRefresh.token), getRefreshTokenExpiresAt(nextRefresh.token)]
+		)
+		await client.query('COMMIT')
+		setRefreshCookie(res, nextRefresh.token)
+		res.json({ accessToken, user })
+	} catch (err) {
+		await client.query('ROLLBACK').catch(() => undefined)
+		clearRefreshCookie(res)
+		console.error('刷新 token 失败:', err)
+		res.status(401).json({ error: '登录已过期，请重新登录' })
+	} finally {
+		client.release()
+	}
+})
+
+router.post('/logout', async (req: Request, res: Response) => {
+	const refreshToken = readCookie(req, REFRESH_COOKIE)
+	if (refreshToken) {
+		await pool.query(
+			'UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = $1 AND revoked_at IS NULL',
+			[hashToken(refreshToken)]
+		).catch((err) => console.error('撤销 refresh token 失败:', err))
+	}
+	clearRefreshCookie(res)
+	res.json({ message: '已退出登录' })
 })
 
 export default router

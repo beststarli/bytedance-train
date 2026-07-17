@@ -67,16 +67,17 @@ export default function MaterialsPage() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <div className="max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
+    <div className="enter-workspace flex-1 overflow-y-auto px-7 py-7">
+      <div className="max-w-[1240px] mx-auto">
+        <div className="flex items-end justify-between mb-7">
           <div>
-            <h1 className="text-xl font-bold">素材管理</h1>
-            <p className="text-sm text-muted-foreground mt-1">管理上传的图片和视频素材，共 {materials.length} 个</p>
+            <div className="workspace-label mb-2">Asset library</div>
+            <h1 className="text-2xl font-bold">素材库</h1>
+            <p className="text-sm text-muted-foreground mt-1.5">管理图片、视频和创作参考，共 {materials.length} 个素材</p>
           </div>
           <div>
             <input ref={fileRef} type="file" accept="image/*,video/*" onChange={handleUpload} className="hidden" disabled={uploading} />
-            <Button onClick={() => fileRef.current?.click()} disabled={uploading} className="bg-red-500 hover:bg-red-600 text-white gap-2">
+            <Button onClick={() => fileRef.current?.click()} disabled={uploading} className="h-10 rounded-lg bg-[#f5222d] hover:bg-[#df1722] text-white gap-2">
               <Upload className="w-4 h-4" />{uploading ? '上传中...' : '上传素材'}
             </Button>
           </div>
@@ -87,11 +88,11 @@ export default function MaterialsPage() {
         ) : materials.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">暂无素材</div>
         ) : (
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {materials.map((m) => {
               const Icon = typeIcons[m.type] || FileType
               return (
-                <div key={m.id} className="group rounded-xl border bg-card overflow-hidden hover:border-red-200 transition-colors">
+                <div key={m.id} className="workspace-card group overflow-hidden hover:border-red-200 transition-all hover:-translate-y-0.5">
                   <div className="aspect-video bg-muted flex items-center justify-center relative overflow-hidden">
                     {m.type === 'image' ? (
                       <img src={m.url} alt={m.filename} className="w-full h-full object-cover" />
