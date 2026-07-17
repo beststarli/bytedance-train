@@ -381,7 +381,14 @@ router.get('/works', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { rows } = await pool.query(
-		'SELECT id, title, content, status, quality_score, view_count, created_at, updated_at FROM works WHERE user_id = $1 ORDER BY updated_at DESC',
+		`SELECT w.id, w.title, w.content, w.status, w.quality_score, w.view_count, w.created_at, w.updated_at,
+			 COUNT(*) FILTER (WHERE r.type = 'like')::int AS like_count,
+			 COUNT(*) FILTER (WHERE r.type = 'favorite')::int AS favorite_count
+		 FROM works w
+		 LEFT JOIN work_reactions r ON r.work_id = w.id
+		 WHERE w.user_id = $1
+		 GROUP BY w.id
+		 ORDER BY w.updated_at DESC`,
 		[userId]
 	)
 	res.json({ works: rows })

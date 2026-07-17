@@ -61,12 +61,26 @@ interface MainPageProps {
   mode?: string
 }
 
+function getArticlePreview(content: string) {
+  const markdownImage = content.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/i)
+  const directImage = content.match(/https?:\/\/[^\s)]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?/i)
+  const image = markdownImage?.[1] || directImage?.[0] || null
+  const text = content
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+    .replace(/https?:\/\/[^\s)]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?/gi, "")
+    .replace(/[#>*_`-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  return { image, text }
+}
+
 function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
   const [articles, setArticles] = useState<FeedItem[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedArticle, setSelectedArticle] = useState<FeedItem | null>(null)
   const [hotNews, setHotNews] = useState<HotNewsItem[]>([])
   const [newsConfigured, setNewsConfigured] = useState(true)
+  const [hotNewsLoading, setHotNewsLoading] = useState(true)
 
   useEffect(() => {
     api<{ works: FeedItem[] }>("/api/content/feed?sort=new&limit=10&offset=0")
@@ -82,6 +96,7 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
         setNewsConfigured(data.configured)
       })
       .catch(() => setHotNews([]))
+      .finally(() => setHotNewsLoading(false))
   }, [])
 
   const openArticle = async (article: FeedItem) => {
@@ -112,13 +127,29 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
     }
   }
 
+  const toggleArticleReaction = async (article: FeedItem, type: "like" | "favorite") => {
+    try {
+      const data = await api<{ active: boolean }>(`/api/content/feed/${article.id}/reactions`, {
+        method: "POST",
+        body: JSON.stringify({ type }),
+      })
+      setArticles((items) => items.map((item) => item.id === article.id ? {
+        ...item,
+        [type === "like" ? "liked" : "favorited"]: data.active,
+        [type === "like" ? "like_count" : "favorite_count"]: Math.max(0, Number(item[type === "like" ? "like_count" : "favorite_count"] || 0) + (data.active ? 1 : -1)),
+      } : item))
+    } catch {
+      // 未登录时不改变本地互动状态
+    }
+  }
+
   const hotArticles = [...articles]
     .sort((a, b) => Number(b.view_count || 0) - Number(a.view_count || 0))
     .slice(0, 5)
 
   return (
-    <div className="enter-workspace flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-[1440px] px-4 py-4 sm:px-7 sm:py-4">
+    <div className="enter-workspace flex-1 overflow-y-auto xl:h-[calc(100dvh-72px)] xl:overflow-hidden">
+      <div className="mx-auto max-w-[1600px] px-4 py-4 sm:px-7 xl:flex xl:h-full xl:flex-col">
         <section className="mb-7 flex flex-col items-start justify-between gap-4 border-b pb-6 sm:flex-row sm:items-end">
           <div>
             <div className="workspace-label mb-2">Content discovery</div>
@@ -129,12 +160,12 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
             onClick={() => onNavigate?.("create")}
             className="h-10 rounded-lg bg-[#f5222d] px-4 text-white hover:bg-[#df1722]"
           >
-            <Plus className="mr-1.5 h-4 w-4" /> 开始创作
+            <Plus className="mr-1.5 h-4 w-4" /> 去创作
           </Button>
         </section>
 
-        <div className="grid grid-cols-12 gap-5">
-          <section className="workspace-card col-span-12 overflow-hidden xl:col-span-8">
+        <div className="grid min-h-0 flex-1 grid-cols-12 gap-5">
+          <section className="workspace-card col-span-12 flex min-h-0 flex-col overflow-hidden xl:col-span-9">
             <div className="flex items-center justify-between border-b px-5 py-4 sm:px-6">
               <div>
                 <h2 className="font-bold">最新发布</h2>
@@ -144,38 +175,34 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
             </div>
 
             {loading ? (
-              <div className="py-24 text-center text-sm text-muted-foreground">正在加载文章…</div>
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">正在加载文章…</div>
             ) : articles.length === 0 ? (
-              <div className="py-24 text-center">
+              <div className="flex flex-1 flex-col items-center justify-center text-center">
                 <FileText className="mx-auto h-7 w-7 text-muted-foreground/50" />
                 <h2 className="mt-3 text-sm font-semibold">还没有已发布文章</h2>
                 <p className="mt-1 text-xs text-muted-foreground">发布后的内容会展示在首页。</p>
               </div>
             ) : (
-              <div>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 p-3 sm:p-4">
                 {articles.map((article) => (
-                  <article key={article.id} onClick={() => void openArticle(article)} className="group cursor-pointer border-b px-5 py-5 last:border-b-0 hover:bg-muted/20 sm:px-6">
-                    <div className="flex items-start justify-between gap-5">
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <article key={article.id} onClick={() => void openArticle(article)} className="group cursor-pointer rounded-lg border bg-card p-3 transition-colors hover:border-red-200 hover:bg-red-50/10 sm:p-4">
+                    <div className="flex gap-4">
+                      {getArticlePreview(article.content).image ? (
+                        <img src={getArticlePreview(article.content).image!} alt="" className="h-28 w-36 shrink-0 rounded-lg object-cover sm:h-32 sm:w-44" />
+                      ) : (
+                        <div className="flex h-28 w-36 shrink-0 items-center justify-center rounded-lg border bg-muted/50 text-xs text-muted-foreground sm:h-32 sm:w-44">无配图</div>
+                      )}
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <h2 className="line-clamp-1 text-lg font-bold transition-colors group-hover:text-red-600">{article.title}</h2>
+                        <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">{getArticlePreview(article.content).text || "暂无正文内容"}…</p>
+                        <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-2 pt-3 text-[11px] text-muted-foreground">
                           <span className="font-medium text-foreground">{article.nickname || "创作者"}</span>
-                          <span>·</span>
                           <span>{formatDate(article.created_at)}</span>
-                        </div>
-                        <h2 className="text-base font-bold transition-colors group-hover:text-red-600">{article.title}</h2>
-                        <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">{article.content}</p>
-                        <div className="mt-3 flex items-center gap-4 text-[11px] text-muted-foreground">
-                          <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5" /> {article.view_count || 0}</span>
-                          {article.quality_score !== null && <span>质量分 {article.quality_score}</span>}
+                          <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5" />{article.view_count || 0}</span>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); void toggleArticleReaction(article, "like") }} className={cn("flex items-center gap-1 hover:text-red-500", article.liked && "text-red-500")}><Heart className={cn("h-3.5 w-3.5", article.liked && "fill-current")} />{article.like_count || 0}</button>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); void toggleArticleReaction(article, "favorite") }} className={cn("flex items-center gap-1 hover:text-amber-600", article.favorited && "text-amber-600")}><Bookmark className={cn("h-3.5 w-3.5", article.favorited && "fill-current")} />{article.favorite_count || 0}</button>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={(event) => { event.stopPropagation(); void openArticle(article) }}
-                        className="focus-red hidden h-9 shrink-0 items-center gap-1 rounded-lg px-3 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 sm:flex"
-                      >
-                        阅读全文 <ArrowRight className="h-3.5 w-3.5" />
-                      </button>
                     </div>
                   </article>
                 ))}
@@ -183,10 +210,28 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
             )}
           </section>
 
-          <aside className="col-span-12 space-y-5 xl:col-span-4">
+          <aside className="col-span-12 min-h-0 space-y-5 overflow-y-auto xl:col-span-3">
             <section className="workspace-card p-5">
               <div className="mb-3 flex items-center justify-between"><div><h2 className="text-sm font-bold">当下热点</h2><p className="mt-1 text-[10px] text-muted-foreground">实时新闻选题雷达</p></div><span className="h-2 w-2 rounded-full bg-red-500" /></div>
-              {hotNews.length ? <div>{hotNews.slice(0, 5).map((news, index) => <a key={news.url} href={news.url} target="_blank" rel="noreferrer" className="group flex gap-2.5 rounded-lg px-1 py-1.5 hover:bg-muted/60"><span className="text-xs font-bold text-red-500">{String(index + 1).padStart(2, "0")}</span><span><span className="line-clamp-1 text-xs font-medium leading-5 group-hover:text-red-600">{news.title}</span><span className="block text-[10px] text-muted-foreground">{news.source?.name || "新闻来源"}</span></span></a>)}</div> : <div className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">{newsConfigured ? "热点新闻暂时不可用" : "配置 GNEWS_API_KEY 后显示实时热点"}</div>}
+              <div className="min-h-[170px]">
+                {hotNewsLoading ? (
+                  <div className="space-y-1" aria-label="正在加载热点新闻">
+                    {Array.from({ length: 5 }).map((_, index) => (
+                      <div key={index} className="flex h-8 items-center gap-2.5 px-1">
+                        <span className="h-3 w-4 animate-pulse rounded bg-muted" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block h-3 animate-pulse rounded bg-muted" style={{ width: `${88 - index * 7}%` }} />
+                          <span className="mt-1 block h-2 w-16 animate-pulse rounded bg-muted/70" />
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : hotNews.length ? (
+                  <div>{hotNews.slice(0, 5).map((news, index) => <a key={news.url} href={news.url} target="_blank" rel="noreferrer" className="group flex gap-2.5 rounded-lg px-1 py-1.5 hover:bg-muted/60"><span className="text-xs font-bold text-red-500">{String(index + 1).padStart(2, "0")}</span><span><span className="line-clamp-1 text-xs font-medium leading-5 group-hover:text-red-600">{news.title}</span><span className="block text-[10px] text-muted-foreground">{news.source?.name || "新闻来源"}</span></span></a>)}</div>
+                ) : (
+                  <div className="flex min-h-[170px] items-center justify-center rounded-lg border border-dashed px-3 text-center text-xs text-muted-foreground">{newsConfigured ? "热点新闻暂时不可用" : "配置 GNEWS_API_KEY 后显示实时热点"}</div>
+                )}
+              </div>
             </section>
             <section className="workspace-card p-5">
               <div className="mb-3 flex items-center gap-2">
@@ -198,20 +243,21 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
                   <p className="text-[10px] text-muted-foreground">按阅读热度实时排序</p>
                 </div>
               </div>
-              <div>
-                {(hotArticles.length ? hotArticles : [
-                  { id: "hot-1", title: "AI Agent 的 5 种工作方式", view_count: 12860 },
-                  { id: "hot-2", title: "年轻人的第一套效率系统", view_count: 9234 },
-                  { id: "hot-3", title: "一人公司正在成为现实", view_count: 7881 },
-                ]).map((article, index) => (
-                  <button key={article.id} type="button" className="focus-red group flex w-full items-start gap-2.5 rounded-lg px-1 py-2 text-left hover:bg-muted/60">
-                    <span className={cn("w-5 text-sm font-black italic", index < 3 ? "text-red-500" : "text-muted-foreground")}>{index + 1}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="line-clamp-2 text-xs font-medium leading-5 group-hover:text-red-600">{article.title}</span>
-                      <span className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground"><Flame className="h-3 w-3" /> {Number(article.view_count || 0).toLocaleString("zh-CN")} 热度</span>
-                    </span>
-                  </button>
-                ))}
+              <div className="min-h-[180px]">
+                {loading ? Array.from({ length: 5 }).map((_, index) => (
+                  <div key={index} className="flex h-9 items-center gap-2.5 px-1">
+                    <span className="h-3 w-4 animate-pulse rounded bg-muted" />
+                    <span className="flex-1"><span className="block h-3 animate-pulse rounded bg-muted" style={{ width: `${90 - index * 6}%` }} /><span className="mt-1 block h-2 w-20 animate-pulse rounded bg-muted/70" /></span>
+                  </div>
+                )) : Array.from({ length: 5 }).map((_, index) => {
+                  const article = hotArticles[index]
+                  return article ? (
+                    <button key={article.id} type="button" onClick={() => void openArticle(article)} className="focus-red group flex h-9 w-full items-start gap-2.5 rounded-lg px-1 py-1 text-left hover:bg-muted/60">
+                      <span className={cn("w-5 text-sm font-black italic", index < 3 ? "text-red-500" : "text-muted-foreground")}>{index + 1}</span>
+                      <span className="min-w-0 flex-1"><span className="line-clamp-1 text-xs font-medium leading-5 group-hover:text-red-600">{article.title}</span><span className="flex items-center gap-1 text-[10px] text-muted-foreground"><Flame className="h-3 w-3" /> {Number(article.view_count || 0).toLocaleString("zh-CN")} 热度</span></span>
+                    </button>
+                  ) : <div key={`empty-${index}`} className="h-9" aria-hidden="true" />
+                })}
               </div>
             </section>
 
@@ -358,13 +404,13 @@ function WorkspaceHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
               <div className="mb-5 flex items-center justify-between">
                 <div>
                   <h2 className="text-base font-bold">新的创作</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">选择创作方式，AI 会沿用你的素材和模板偏好</p>
+                  <p className="mt-1 text-xs text-muted-foreground">选择创作方式，AI 会沿用你的素材和提示词模版偏好</p>
                 </div>
                 <button
                   onClick={() => onNavigate?.("prompts")}
                   className="focus-red flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-50"
                 >
-                  管理 Prompt <ArrowRight className="h-3.5 w-3.5" />
+                  管理提示词 <ArrowRight className="h-3.5 w-3.5" />
                 </button>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -438,7 +484,7 @@ function WorkspaceHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
                   {[
                     { title: "AI Agent 的 5 种工作方式", status: "待确认", tone: "amber" },
                     { title: "周末城市散步指南", status: "审核中", tone: "blue" },
-                    { title: "Prompt 实战手册", status: "已通过", tone: "green" },
+                    { title: "提示词实战手册", status: "已通过", tone: "green" },
                   ].map((item) => (
                     <div key={item.title} className="flex items-center gap-3 rounded-lg bg-muted/55 p-3">
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background">
@@ -547,7 +593,7 @@ function WorkspaceHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 function InspirationView({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
   return (
     <div className="enter-workspace flex-1 overflow-y-auto px-7 py-7">
-      <div className="mx-auto max-w-[1200px]">
+      <div className="mx-auto">
         <div className="mb-7">
           <div className="workspace-label mb-2">Inspiration radar</div>
           <h1 className="text-2xl font-bold">创作灵感</h1>

@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import Header from "@/components/header";
 import Login from "@/components/login";
 import Sidebar from "@/components/sidebar";
-import CreatePage from "@/components/createPage";
-import MainPage from "@/components/mainPage";
+import CreatePage from "@/components/createPage/createPage";
+import MainPage from "@/components/ideaPage/mainPage";
 import UserPage from "@/components/userPage/userPage";
 import WorksPage from "@/components/worksPage";
 import PromptsPage from "@/components/promptPage/promptsPage";
@@ -13,11 +13,13 @@ import MaterialsPage from "@/components/materialsPage";
 import ReviewPage from "@/components/reviewPage";
 import { useAuthStore } from "@/store/userStore";
 import { restoreSession } from "@/api/api";
+import TaskProgress from "@/components/taskProgress";
 
 export default function Home() {
 	const [activeMenu, setActiveMenu] = useState("dashboard")
 	const [showLogin, setShowLogin] = useState(false)
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+	const [homeRefreshKey, setHomeRefreshKey] = useState(0)
 	const user = useAuthStore((state) => state.user)
 
 	useEffect(() => {
@@ -28,9 +30,9 @@ export default function Home() {
 		const [menu, subview] = activeMenu.split(":")
 		switch (menu) {
 			case "create":
-				return <CreatePage initialMode={subview === "manual" || subview === "ai" ? subview : undefined} />
+				return <CreatePage initialMode={subview === "manual" || subview === "ai" ? subview : undefined} onNavigate={setActiveMenu} />
 			case "dashboard":
-				return <MainPage onNavigate={setActiveMenu} />
+				return <MainPage key={homeRefreshKey} onNavigate={setActiveMenu} />
 			case "inspiration":
 				return <MainPage onNavigate={setActiveMenu} mode={menu} />
 			case "works":
@@ -63,10 +65,14 @@ export default function Home() {
 				onMenuChange={setActiveMenu}
 				collapsed={sidebarCollapsed}
 				onCollapsedChange={setSidebarCollapsed}
+				onHomeRefresh={() => {
+					setActiveMenu("dashboard")
+					setHomeRefreshKey((key) => key + 1)
+				}}
 			/>
 
 			{/* 右侧主内容区 */}
-			<div className={`min-h-screen flex flex-col pb-16 transition-[margin] duration-200 lg:pb-0 ${sidebarCollapsed ? "lg:ml-[72px]" : "lg:ml-60"}`}>
+			<div className={`min-h-screen flex flex-col pb-16 transition-[margin] duration-200 lg:pb-0 ${sidebarCollapsed ? "lg:ml-14" : "lg:ml-60"}`}>
 				{/* 固定头部 */}
 				<Header
 					onLoginClick={() => setShowLogin(true)}
@@ -82,6 +88,7 @@ export default function Home() {
 
 			{/* 登录弹窗 */}
 			<Login open={showLogin} onOpenChange={setShowLogin} />
+			<TaskProgress />
 		</div>
 	);
 }

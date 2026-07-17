@@ -68,7 +68,7 @@ export default function MaterialsPage() {
 
   return (
     <div className="enter-workspace flex-1 overflow-y-auto px-7 py-7">
-      <div className="max-w-[1240px] mx-auto">
+      <div className="mx-auto">
         <div className="flex items-end justify-between mb-7">
           <div>
             <div className="workspace-label mb-2">Asset library</div>

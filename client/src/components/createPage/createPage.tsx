@@ -22,6 +22,7 @@ import { useAuthStore } from '@/store/userStore'
 import { api, getValidAccessToken } from '@/api/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { emitTaskProgress } from '@/components/taskProgress'
 
 interface Chat {
 	id: string
@@ -58,11 +59,33 @@ const iconMap: Record<string, React.ElementType> = {
 	FileText, ImageIcon, Video, Sparkles,
 }
 
-interface CreatePageProps {
-	initialMode?: 'manual' | 'ai'
+function renderInlineMarkdown(text: string) {
+	return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
+		if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>
+		if (part.startsWith('`') && part.endsWith('`')) return <code key={index} className="rounded bg-muted px-1 py-0.5 text-[.9em]">{part.slice(1, -1)}</code>
+		return <React.Fragment key={index}>{part}</React.Fragment>
+	})
 }
 
-export default function CreatePage({ initialMode }: CreatePageProps) {
+function MarkdownContent({ content }: { content: string }) {
+	return <div className="space-y-2">{content.split('\n').map((line, index) => {
+		if (line.startsWith('### ')) return <h3 key={index} className="pt-2 text-base font-bold">{renderInlineMarkdown(line.slice(4))}</h3>
+		if (line.startsWith('## ')) return <h2 key={index} className="pt-2 text-lg font-bold">{renderInlineMarkdown(line.slice(3))}</h2>
+		if (line.startsWith('# ')) return <h1 key={index} className="pt-2 text-xl font-bold">{renderInlineMarkdown(line.slice(2))}</h1>
+		if (/^[-*]\s/.test(line)) return <div key={index} className="flex gap-2"><span className="text-red-500">•</span><span>{renderInlineMarkdown(line.slice(2))}</span></div>
+		const ordered = line.match(/^(\d+)\.\s(.*)$/)
+		if (ordered) return <div key={index} className="flex gap-2"><span className="font-semibold text-red-500">{ordered[1]}.</span><span>{renderInlineMarkdown(ordered[2])}</span></div>
+		if (!line.trim()) return <div key={index} className="h-1" />
+		return <p key={index}>{renderInlineMarkdown(line)}</p>
+	})}</div>
+}
+
+interface CreatePageProps {
+	initialMode?: 'manual' | 'ai'
+	onNavigate?: (menu: string) => void
+}
+
+export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const user = useAuthStore((s) => s.user)
 	const [sidebarOpen, setSidebarOpen] = useState(true)
 	const [chats, setChats] = useState<Chat[]>([])
@@ -73,7 +96,7 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 	const [modelType, setModelType] = useState<string | undefined>(undefined)
 	const [loadingChats, setLoadingChats] = useState(true)
 	const [sending, setSending] = useState(false)
-	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>(initialMode || null)
+	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>('ai')
 	const [draftTitle, setDraftTitle] = useState('')
 	const [draftContent, setDraftContent] = useState('')
 	const [publishing, setPublishing] = useState(false)
@@ -295,6 +318,7 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 	const handlePublish = async (status: 'draft' | 'published') => {
 		if (!draftTitle.trim() || !draftContent.trim()) return
 		setPublishing(true)
+		emitTaskProgress({ title: status === 'published' ? '正在发布文章' : '正在保存草稿', status: 'running', message: '正在同步内容与作品数据' })
 		try {
 			await api('/api/content/works', {
 				method: 'POST',
@@ -302,6 +326,10 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 			})
 			setDraftTitle('')
 			setDraftContent('')
+			emitTaskProgress({ title: status === 'published' ? '文章发布成功' : '草稿保存成功', status: 'success', message: '内容已同步' })
+			if (status === 'published') onNavigate?.('dashboard')
+		} catch (error) {
+			emitTaskProgress({ title: '操作失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
 		} finally {
 			setPublishing(false)
 		}
@@ -319,7 +347,7 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 					<div className="grid gap-5 md:grid-cols-2">
 						<button type="button" onClick={() => setCreationMode('manual')} className="focus-red group min-h-64 rounded-lg border bg-card p-7 text-left transition-all hover:border-red-200 hover:shadow-sm">
 							<span className="flex h-11 w-11 items-center justify-center rounded-lg bg-red-50 text-red-500"><PenLine className="h-5 w-5" /></span>
-							<h2 className="mt-10 text-xl font-bold">自由写作台</h2>
+							<h2 className="mt-10 text-xl font-bold">内容写作台</h2>
 							<p className="mt-2 text-sm leading-6 text-muted-foreground">适合已有明确思路的创作者。专注编写标题和正文，完成后直接保存草稿或发布。</p>
 							<span className="mt-8 flex items-center gap-1 text-sm font-semibold text-red-500">开始写作 <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" /></span>
 						</button>
@@ -340,7 +368,7 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 			<div className="enter-workspace flex-1 overflow-y-auto px-4 py-6 sm:px-8">
 				<div className="mx-auto max-w-4xl">
 					<div className="mb-5 flex items-center justify-between gap-4">
-						<div><button type="button" onClick={() => setCreationMode(null)} className="text-xs text-muted-foreground hover:text-red-500">← 返回创作方式</button><h1 className="mt-2 text-xl font-bold">自由写作台</h1></div>
+						<div><button type="button" onClick={() => setCreationMode(null)} className="text-xs text-muted-foreground hover:text-red-500">← 返回创作方式</button><h1 className="mt-2 text-xl font-bold">内容写作台</h1></div>
 						<div className="flex gap-2"><Button variant="outline" disabled={publishing} onClick={() => void handlePublish('draft')}>保存草稿</Button><Button disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button></div>
 					</div>
 					<div className="workspace-card overflow-hidden">
@@ -353,7 +381,17 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 	}
 
 	return (
-		<div className="enter-workspace relative flex h-[calc(100dvh-8.5rem)] flex-1 overflow-hidden bg-[#f7f8fb] lg:h-[calc(100vh-4.5rem)]">
+		<div className="enter-workspace relative flex h-[calc(100dvh-8.5rem)] flex-1 overflow-hidden bg-[#fbfbfc] lg:h-[calc(100vh-4.5rem)]">
+			<section className="order-2 hidden w-[42%] min-w-[420px] flex-col border-l bg-background lg:flex">
+				<div className="flex h-16 shrink-0 items-center justify-between border-b px-5">
+					<div><div className="text-sm font-bold">内容写作台</div><div className="mt-1 text-[10px] text-muted-foreground">内容会在发布前保留在当前工作区</div></div>
+					<div className="flex gap-2"><Button variant="outline" size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button><Button size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button></div>
+				</div>
+				<div className="min-h-0 flex-1 overflow-y-auto">
+					<input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} placeholder="输入文章标题" className="w-full bg-transparent px-6 pt-4 text-xl font-bold outline-none placeholder:text-muted-foreground/40" />
+					<textarea value={draftContent} onChange={(event) => setDraftContent(event.target.value)} placeholder="从这里开始写作，也可以将右侧 AI 生成的内容整理到这里…" className="min-h-[calc(100%-76px)] w-full resize-none bg-transparent px-6 py-2 text-sm leading-7 outline-none placeholder:text-muted-foreground/40" />
+				</div>
+			</section>
 			{/* 侧边栏 */}
 			<aside
 				className={cn(
@@ -415,14 +453,17 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 
 			{/* 侧边栏切换按钮 */}
 			<button
+				type="button"
 				onClick={() => setSidebarOpen(!sidebarOpen)}
-				className={cn(
-					"absolute top-1/2 z-10 hidden h-12 w-6 -translate-y-1/2 items-center justify-center rounded-r-lg border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:flex",
-					sidebarOpen ? "-translate-x-1/2" : ""
-				)}
-				style={{ left: sidebarOpen ? '18rem' : '0.25rem' }}
+				aria-label={sidebarOpen ? "收起创作记录" : "展开创作记录"}
+				title={sidebarOpen ? "收起创作记录" : "展开创作记录"}
+				className="group absolute top-1/2 z-20 hidden h-11 w-7 -translate-x-px -translate-y-1/2 items-center justify-center rounded-r-lg border border-l-0 bg-white text-muted-foreground shadow-[2px_0_8px_rgba(24,32,56,.08)] transition-[left,background-color,color] duration-200 hover:bg-red-50 hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 md:flex"
+				style={{ left: sidebarOpen ? '18rem' : '0' }}
 			>
-				{sidebarOpen ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+				{sidebarOpen ? <ChevronLeft className="h-4 w-4 transition-transform group-hover:-translate-x-0.5" /> : <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />}
+				<span className="pointer-events-none absolute left-full ml-2 hidden whitespace-nowrap rounded-md border bg-white px-2 py-1 text-[10px] text-foreground shadow-sm group-hover:block">
+					{sidebarOpen ? "收起创作记录" : "展开创作记录"}
+				</span>
 			</button>
 
 			{/* 主内容区 */}
@@ -483,7 +524,7 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 												return isImage ? (
 													<img src={msg.content} alt="生成的图片" className="max-w-full rounded-lg" />
 												) : (
-													msg.content
+													msg.role === 'assistant' ? <MarkdownContent content={msg.content} /> : msg.content
 												)
 											})()}
 										</div>
@@ -614,10 +655,10 @@ export default function CreatePage({ initialMode }: CreatePageProps) {
 							<div className="w-full">
 								<div className="mb-4 flex items-end justify-between">
 									<div>
-										<h3 className="text-sm font-bold">从模板开始</h3>
-										<p className="mt-1 text-xs text-muted-foreground">复用经过调试的 Prompt，快速进入稳定创作流程</p>
+										<h3 className="text-sm font-bold">从提示词模版开始</h3>
+										<p className="mt-1 text-xs text-muted-foreground">复用经过调试的提示词，快速进入稳定创作流程</p>
 									</div>
-									<span className="text-[11px] text-muted-foreground">共 {prompts.length} 个模板</span>
+									<span className="text-[11px] text-muted-foreground">共 {prompts.length} 个提示词模版</span>
 								</div>
 								<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
 									{prompts.map((prompt) => {

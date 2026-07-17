@@ -42,7 +42,7 @@ export default function Header({
                 <div className="relative w-full sm:w-[300px] xl:w-[360px]">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
-                        placeholder="搜索作品、素材或 Prompt"
+                        placeholder="搜索作品、素材或提示词"
                         className="pl-9 pr-14 h-10 bg-muted/70 border-transparent rounded-lg focus-visible:border-red-200 focus-visible:ring-red-100"
                     />
                     <div className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 rounded-md border bg-background px-1.5 py-1 text-[10px] text-muted-foreground sm:flex">
