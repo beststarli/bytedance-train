@@ -3,8 +3,9 @@ import fs from 'fs'
 import path from 'path'
 import { pool } from '../utils/db'
 import { verifyToken } from '../utils/jwt'
-import { chatCompletion, chatCompletionStream, generateImage, generateVideo, detectModelType } from '../utils/ai'
+import { chatCompletion, chatCompletionStream, generateImage, generateVideo, detectModelType, chatSummary } from '../utils/ai'
 import type { ModelType } from '../utils/ai'
+import { truncateToTokenLimit, buildMessages, countTokens, DEFAULT_TEXT_CONFIG } from '../utils/context'
 
 const router: Router = Router()
 
@@ -19,6 +20,16 @@ function auth(req: Request, res: Response) {
 		return verifyToken(header.slice(7)).userId
 	} catch {
 		res.status(401).json({ error: 'token 已过期或无效' })
+		return null
+	}
+}
+
+function optionalUserId(req: Request) {
+	const header = req.headers.authorization
+	if (!header?.startsWith('Bearer ')) return null
+	try {
+		return verifyToken(header.slice(7)).userId
+	} catch {
 		return null
 	}
 }
@@ -100,7 +111,6 @@ router.post('/chats/:id/messages', async (req: Request, res: Response) => {
 		return
 	}
 
-	// 验证聊天属于当前用户
 	const { rows: chatRows } = await pool.query(
 		'SELECT id FROM chats WHERE id = $1 AND user_id = $2',
 		[req.params.id, userId]
@@ -110,19 +120,18 @@ router.post('/chats/:id/messages', async (req: Request, res: Response) => {
 		return
 	}
 
-	// 存用户消息
 	const { rows: msgRows } = await pool.query(
 		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
 		[req.params.id, 'user', content]
 	)
 
-	// 更新聊天 updated_at
 	await pool.query('UPDATE chats SET updated_at = NOW() WHERE id = $1', [req.params.id])
 
 	res.json({ message: msgRows[0] })
 })
 
-// 生成 AI 回复（支持文生文 / 文生图 / 文生视频）
+// ==================== AI 生成（JSON 响应，向后兼容） ====================
+
 router.post('/chats/:id/generate', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -133,9 +142,88 @@ router.post('/chats/:id/generate', async (req: Request, res: Response) => {
 		return
 	}
 
-	// 验证聊天属于当前用户
 	const { rows: chatRows } = await pool.query(
 		'SELECT id, title FROM chats WHERE id = $1 AND user_id = $2',
+		[req.params.id, userId]
+	)
+	if (!chatRows[0]) {
+		res.status(404).json({ error: '聊天不存在' })
+		return
+	}
+
+	const { rows: userMsg } = await pool.query(
+		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
+		[req.params.id, 'user', content]
+	)
+
+	const modelType: ModelType = model_type && ['text', 'image', 'video'].includes(model_type)
+		? model_type
+		: detectModelType(content)
+
+	let aiContent: string
+
+	switch (modelType) {
+		case 'image': {
+			const urls = await generateImage(content)
+			aiContent = urls[0] || '图片生成失败'
+			break
+		}
+		case 'video': {
+			const { task_id } = await generateVideo(content)
+			aiContent = `视频生成任务已提交，任务 ID: ${task_id}`
+			break
+		}
+		default: {
+			const { rows: history } = await pool.query(
+				`SELECT role, content FROM messages
+				 WHERE chat_id = $1 AND id != $2
+				 ORDER BY created_at ASC`,
+				[req.params.id, userMsg[0].id]
+			)
+			const messages = history.map((m: any) => ({
+				role: m.role as 'user' | 'assistant',
+				content: m.content,
+			}))
+			const finalMessages = buildMessages(messages, { role: 'user', content })
+			const totalTokens = finalMessages.reduce((sum, m) => sum + countTokens(m.content), 0)
+			console.log(`[Chat ${req.params.id}] ${finalMessages.length} messages, ~${totalTokens} tokens`)
+			aiContent = await chatCompletion(finalMessages)
+			const { truncatedCount } = truncateToTokenLimit(messages, DEFAULT_TEXT_CONFIG)
+			if (truncatedCount > 0) {
+				console.log(`[Chat ${req.params.id}] Truncated ${truncatedCount} old messages`)
+			}
+		}
+	}
+
+	const { rows: aiMsg } = await pool.query(
+		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
+		[req.params.id, 'assistant', aiContent]
+	)
+
+	if (chatRows[0].title === '新对话') {
+		const shortTitle = content.length > 30 ? content.slice(0, 30) + '…' : content
+		await pool.query('UPDATE chats SET title = $1, updated_at = NOW() WHERE id = $2', [shortTitle, req.params.id])
+	} else {
+		await pool.query('UPDATE chats SET updated_at = NOW() WHERE id = $1', [req.params.id])
+	}
+
+	res.json({ user_message: userMsg[0], ai_message: aiMsg[0], model_type: modelType })
+})
+
+// ==================== AI 生成（SSE 流式，文生文/图/视频通用） ====================
+
+router.post('/chats/:id/generate-stream', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+
+	const { content, model_type } = req.body
+	if (!content?.trim()) {
+		res.status(400).json({ error: '消息不能为空' })
+		return
+	}
+
+	const { rows: chatRows } = await pool.query(
+		'SELECT id, title, summary FROM chats WHERE id = $1 AND user_id = $2',
 		[req.params.id, userId]
 	)
 	if (!chatRows[0]) {
@@ -149,59 +237,99 @@ router.post('/chats/:id/generate', async (req: Request, res: Response) => {
 		[req.params.id, 'user', content]
 	)
 
-	// 确定模型类型：前端可指定，否则自动检测
-	const modelType: ModelType = model_type && ['text', 'image', 'video'].includes(model_type)
-		? model_type
-		: detectModelType(content)
+	// 设置 SSE 响应头
+	res.setHeader('Content-Type', 'text/event-stream')
+	res.setHeader('Cache-Control', 'no-cache')
+	res.setHeader('Connection', 'keep-alive')
+	res.setHeader('X-Accel-Buffering', 'no')
+	// Disable Nagle to prevent TCP buffering of small SSE chunks
+	req.socket?.setNoDelay(true)
+	res.flushHeaders()
 
-	let aiContent: string
+	// Send user message event
+	res.write(`data: ${JSON.stringify({ type: 'user_message', message: userMsg[0] })}\n\n`)
 
-	switch (modelType) {
-		case 'image': {
-			// 文生图
-			const urls = await generateImage(content)
-			aiContent = urls[0] || '图片生成失败'
-			break
+	try {
+		const modelType: ModelType = model_type && ['text', 'image', 'video'].includes(model_type)
+			? model_type
+			: detectModelType(content)
+
+		let fullContent = ''
+
+		switch (modelType) {
+			case 'image': {
+				const urls = await generateImage(content)
+				fullContent = urls[0] || '图片生成失败'
+				res.write(`data: ${JSON.stringify({ type: 'chunk', content: fullContent })}\n\n`)
+				break
+			}
+			case 'video': {
+				const { task_id } = await generateVideo(content)
+				fullContent = `视频生成任务已提交，任务 ID: ${task_id}`
+				res.write(`data: ${JSON.stringify({ type: 'chunk', content: fullContent })}\n\n`)
+				break
+			}
+			default: {
+				const { rows: history } = await pool.query(
+					`SELECT role, content FROM messages
+					 WHERE chat_id = $1 AND id != $2
+					 ORDER BY created_at ASC`,
+					[req.params.id, userMsg[0].id]
+				)
+				const messages = history.map((m: any) => ({
+					role: m.role as 'user' | 'assistant',
+					content: m.content,
+				}))
+
+				const summary = chatRows[0].summary || undefined
+				const finalMessages = buildMessages(messages, { role: 'user', content }, { summary })
+
+				const totalTokens = finalMessages.reduce((sum, m) => sum + countTokens(m.content), 0)
+				console.log(`[Stream ${req.params.id}] ${finalMessages.length} messages, ~${totalTokens} tokens`)
+
+				const stream = chatCompletionStream(finalMessages)
+
+				for await (const chunk of stream) {
+					fullContent += chunk
+					res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`)
+				}
+
+				// 触发摘要（不阻塞响应）
+				const { truncatedCount } = truncateToTokenLimit(messages, DEFAULT_TEXT_CONFIG)
+				if (truncatedCount > 2) {
+					chatSummary(messages, summary).then((newSummary) => {
+						pool.query('UPDATE chats SET summary = $1 WHERE id = $2', [newSummary, req.params.id])
+							.catch((err) => console.error('[Summary] save failed:', err))
+					})
+				}
+			}
 		}
-		case 'video': {
-			// 文生视频（异步任务）
-			const { task_id } = await generateVideo(content)
-			aiContent = `视频生成任务已提交，任务 ID: ${task_id}`
-			break
+
+		// 存 AI 消息
+		const { rows: aiMsg } = await pool.query(
+			'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
+			[req.params.id, 'assistant', fullContent]
+		)
+
+		// 更新标题
+		if (chatRows[0].title === '新对话') {
+			const shortTitle = content.length > 30 ? content.slice(0, 30) + '…' : content
+			await pool.query('UPDATE chats SET title = $1, updated_at = NOW() WHERE id = $2', [shortTitle, req.params.id])
+		} else {
+			await pool.query('UPDATE chats SET updated_at = NOW() WHERE id = $1', [req.params.id])
 		}
-		default: {
-			// 文生文：带历史上下文
-			const { rows: history } = await pool.query(
-				'SELECT role, content FROM messages WHERE chat_id = $1 ORDER BY created_at ASC',
-				[req.params.id]
-			)
-			const messages = history.map((m: any) => ({
-				role: m.role as 'user' | 'assistant',
-				content: m.content,
-			}))
-			aiContent = await chatCompletion(messages)
-		}
+
+		res.write(`data: ${JSON.stringify({ type: 'done', message: aiMsg[0] })}\n\n`)
+	} catch (err: any) {
+		console.error('[Stream] Error:', err)
+		res.write(`data: ${JSON.stringify({ type: 'error', message: err.message || '生成失败' })}\n\n`)
+	} finally {
+		res.end()
 	}
-
-	const { rows: aiMsg } = await pool.query(
-		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
-		[req.params.id, 'assistant', aiContent]
-	)
-
-	// 如果聊天还是默认标题，用第一条用户消息更新标题
-	if (chatRows[0].title === '新对话') {
-		const shortTitle = content.length > 30 ? content.slice(0, 30) + '…' : content
-		await pool.query('UPDATE chats SET title = $1, updated_at = NOW() WHERE id = $2', [shortTitle, req.params.id])
-	} else {
-		await pool.query('UPDATE chats SET updated_at = NOW() WHERE id = $1', [req.params.id])
-	}
-
-	res.json({ user_message: userMsg[0], ai_message: aiMsg[0], model_type: modelType })
 })
 
 // ==================== Prompts CRUD ====================
 
-// 获取 prompt 模板列表
 router.get('/prompts', async (_req: Request, res: Response) => {
 	const { rows } = await pool.query(
 		'SELECT id, title, description, content, category, icon, sort_order, is_active, created_at FROM prompts ORDER BY sort_order ASC, created_at ASC'
@@ -209,7 +337,6 @@ router.get('/prompts', async (_req: Request, res: Response) => {
 	res.json({ prompts: rows })
 })
 
-// 创建 prompt
 router.post('/prompts', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -227,7 +354,6 @@ router.post('/prompts', async (req: Request, res: Response) => {
 	res.json({ prompt: rows[0] })
 })
 
-// 更新 prompt
 router.put('/prompts/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -240,7 +366,6 @@ router.put('/prompts/:id', async (req: Request, res: Response) => {
 	res.json({ prompt: rows[0] || null })
 })
 
-// 删除 prompt
 router.delete('/prompts/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -251,19 +376,24 @@ router.delete('/prompts/:id', async (req: Request, res: Response) => {
 
 // ==================== Works ====================
 
-// 获取用户的作品列表
 router.get('/works', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
 
 	const { rows } = await pool.query(
-		'SELECT id, title, content, status, quality_score, view_count, created_at, updated_at FROM works WHERE user_id = $1 ORDER BY updated_at DESC',
+		`SELECT w.id, w.title, w.content, w.status, w.quality_score, w.view_count, w.created_at, w.updated_at,
+			 COUNT(*) FILTER (WHERE r.type = 'like')::int AS like_count,
+			 COUNT(*) FILTER (WHERE r.type = 'favorite')::int AS favorite_count
+		 FROM works w
+		 LEFT JOIN work_reactions r ON r.work_id = w.id
+		 WHERE w.user_id = $1
+		 GROUP BY w.id
+		 ORDER BY w.updated_at DESC`,
 		[userId]
 	)
 	res.json({ works: rows })
 })
 
-// 创建作品
 router.post('/works', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -276,7 +406,6 @@ router.post('/works', async (req: Request, res: Response) => {
 	res.json({ work: rows[0] })
 })
 
-// 更新作品
 router.put('/works/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -289,7 +418,6 @@ router.put('/works/:id', async (req: Request, res: Response) => {
 	res.json({ work: rows[0] || null })
 })
 
-// 删除作品
 router.delete('/works/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -300,7 +428,6 @@ router.delete('/works/:id', async (req: Request, res: Response) => {
 
 // ==================== Materials ====================
 
-// 获取素材列表
 router.get('/materials', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -312,7 +439,6 @@ router.get('/materials', async (req: Request, res: Response) => {
 	res.json({ materials: rows })
 })
 
-// 上传素材（base64）
 router.post('/materials', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -357,7 +483,6 @@ router.post('/materials', async (req: Request, res: Response) => {
 	}
 })
 
-// 删除素材
 router.delete('/materials/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -374,11 +499,15 @@ router.delete('/materials/:id', async (req: Request, res: Response) => {
 
 // ==================== Public Feed ====================
 
-// 公开作品列表（首页热点/爆文）
 router.get('/feed', async (req: Request, res: Response) => {
-	const sort = (req.query.sort as string) || 'hot'
-	const limit = Math.min(parseInt(req.query.limit as string) || 20, 50)
-	const offset = parseInt(req.query.offset as string) || 0
+	const userId = optionalUserId(req)
+	const allowedSorts = new Set(['hot', 'new', 'quality'])
+	const requestedSort = (req.query.sort as string) || 'hot'
+	const sort = allowedSorts.has(requestedSort) ? requestedSort : 'hot'
+	const parsedLimit = Number.parseInt(req.query.limit as string, 10)
+	const parsedOffset = Number.parseInt(req.query.offset as string, 10)
+	const limit = Math.min(Math.max(Number.isFinite(parsedLimit) ? parsedLimit : 20, 1), 50)
+	const offset = Math.max(Number.isFinite(parsedOffset) ? parsedOffset : 0, 0)
 
 	let orderBy = 'w.view_count DESC, w.created_at DESC'
 	if (sort === 'new') orderBy = 'w.created_at DESC'
@@ -386,12 +515,18 @@ router.get('/feed', async (req: Request, res: Response) => {
 
 	const { rows } = await pool.query(
 		`SELECT w.id, w.title, w.content, w.quality_score, w.view_count, w.created_at,
-				u.nickname, u.avatar_url
+				u.nickname, u.avatar_url,
+				COUNT(*) FILTER (WHERE r.type = 'like')::int AS like_count,
+				COUNT(*) FILTER (WHERE r.type = 'favorite')::int AS favorite_count,
+				COALESCE(BOOL_OR(r.user_id = $3 AND r.type = 'like'), false) AS liked,
+				COALESCE(BOOL_OR(r.user_id = $3 AND r.type = 'favorite'), false) AS favorited
 		 FROM works w JOIN users u ON w.user_id = u.id
+		 LEFT JOIN work_reactions r ON r.work_id = w.id
 		 WHERE w.status = 'published'
+		 GROUP BY w.id, u.id
 		 ORDER BY ${orderBy}
 		 LIMIT $1 OFFSET $2`,
-		[limit, offset]
+		[limit, offset, userId]
 	)
 
 	const { rows: countRows } = await pool.query(
@@ -399,6 +534,96 @@ router.get('/feed', async (req: Request, res: Response) => {
 	)
 
 	res.json({ works: rows, total: parseInt(countRows[0].total), has_more: offset + limit < parseInt(countRows[0].total) })
+})
+
+router.get('/feed/:id', async (req: Request, res: Response) => {
+	const userId = optionalUserId(req)
+	const { rows } = await pool.query(
+		`UPDATE works SET view_count = view_count + 1
+		 WHERE id = $1 AND status = 'published'
+		 RETURNING id`,
+		[req.params.id],
+	)
+	if (!rows[0]) {
+		res.status(404).json({ error: '文章不存在' })
+		return
+	}
+	const { rows: articles } = await pool.query(
+		`SELECT w.id, w.title, w.content, w.quality_score, w.view_count, w.created_at,
+				u.nickname, u.avatar_url,
+				COUNT(*) FILTER (WHERE r.type = 'like')::int AS like_count,
+				COUNT(*) FILTER (WHERE r.type = 'favorite')::int AS favorite_count,
+				COALESCE(BOOL_OR(r.user_id = $2 AND r.type = 'like'), false) AS liked,
+				COALESCE(BOOL_OR(r.user_id = $2 AND r.type = 'favorite'), false) AS favorited
+		 FROM works w JOIN users u ON w.user_id = u.id
+		 LEFT JOIN work_reactions r ON r.work_id = w.id
+		 WHERE w.id = $1
+		 GROUP BY w.id, u.id`,
+		[req.params.id, userId],
+	)
+	res.json({ work: articles[0] })
+})
+
+router.post('/feed/:id/reactions', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	const { type } = req.body
+	if (!['like', 'favorite'].includes(type)) {
+		res.status(400).json({ error: '不支持的互动类型' })
+		return
+	}
+	const deleted = await pool.query(
+		'DELETE FROM work_reactions WHERE user_id = $1 AND work_id = $2 AND type = $3 RETURNING type',
+		[userId, req.params.id, type],
+	)
+	let active = false
+	if (!deleted.rows[0]) {
+		await pool.query(
+			'INSERT INTO work_reactions (user_id, work_id, type) VALUES ($1, $2, $3)',
+			[userId, req.params.id, type],
+		)
+		active = true
+	}
+	res.json({ active })
+})
+
+router.get('/creator-dashboard', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	const { rows: stats } = await pool.query(
+		`SELECT COUNT(*)::int AS works,
+				COALESCE(SUM(view_count), 0)::int AS views,
+				COUNT(*) FILTER (WHERE status = 'published')::int AS published,
+				COALESCE(ROUND(AVG(quality_score), 1), 0) AS quality
+		 FROM works WHERE user_id = $1`,
+		[userId],
+	)
+	const { rows: reactions } = await pool.query(
+		`SELECT w.id, w.title, w.content, w.view_count, wr.type, wr.created_at
+		 FROM work_reactions wr JOIN works w ON w.id = wr.work_id
+		 WHERE wr.user_id = $1 ORDER BY wr.created_at DESC LIMIT 12`,
+		[userId],
+	)
+	res.json({ stats: stats[0], reactions })
+})
+
+router.get('/hot-news', async (_req: Request, res: Response) => {
+	res.setHeader('Cache-Control', 'no-store')
+	const apiKey = process.env.GNEWS_API_KEY
+	if (!apiKey) {
+		res.json({ articles: [], configured: false })
+		return
+	}
+	const url = new URL('https://gnews.io/api/v4/top-headlines')
+	url.searchParams.set('category', 'general')
+	url.searchParams.set('lang', 'zh')
+	url.searchParams.set('country', 'cn')
+	url.searchParams.set('max', '8')
+	url.searchParams.set('apikey', apiKey)
+	const response = await fetch(url)
+	if (!response.ok) throw new Error(`热点新闻服务响应异常：${response.status}`)
+	const data = await response.json() as { articles?: unknown[] }
+	res.json({ articles: data.articles || [], configured: true })
 })
 
 export default router

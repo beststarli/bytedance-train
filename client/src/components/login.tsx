@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { api } from '@/api/api'
 import { useAuthStore } from '@/store/userStore'
+import { sendLoginCode, userLoginByCode, userLoginByPassword } from '@/api/login'
 
 interface LoginProps {
     open: boolean
@@ -29,10 +29,7 @@ export default function Login({ open, onOpenChange }: LoginProps) {
         if (!phone || countdown > 0) return
         setError("")
         try {
-            await api('/api/auth/send-code', {
-                method: 'POST',
-                body: JSON.stringify({ phone }),
-            })
+            await sendLoginCode(phone)
             setCountdown(60)
             const timer = setInterval(() => {
                 setCountdown((prev) => {
@@ -53,11 +50,8 @@ export default function Login({ open, onOpenChange }: LoginProps) {
         setError("")
         setLoading(true)
         try {
-            const data = await api<{ token: string; user: any }>('/api/auth/login', {
-                method: 'POST',
-                body: JSON.stringify({ phone, code: verifyCode }),
-            })
-            setAuth(data.user, data.token)
+            const data = await userLoginByCode(phone, verifyCode)
+            setAuth(data.user, data.accessToken)
             onOpenChange(false)
         } catch (err: any) {
             setError(err.message)
@@ -71,11 +65,8 @@ export default function Login({ open, onOpenChange }: LoginProps) {
         setError("")
         setLoading(true)
         try {
-            const data = await api<{ token: string; user: any }>('/api/auth/login-password', {
-                method: 'POST',
-                body: JSON.stringify({ account: accountPhone, password }),
-            })
-            setAuth(data.user, data.token)
+            const data = await userLoginByPassword(accountPhone, password)
+            setAuth(data.user, data.accessToken)
             onOpenChange(false)
         } catch (err: any) {
             setError(err.message)
