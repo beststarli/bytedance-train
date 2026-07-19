@@ -14,6 +14,7 @@ import ReviewPage from "@/components/reviewPage";
 import { useAuthStore } from "@/store/userStore";
 import { restoreSession } from "@/api/api";
 import TaskProgress from "@/components/taskProgress";
+import { Toaster } from "sonner";
 
 export default function Home() {
 	const [activeMenu, setActiveMenu] = useState("dashboard")
@@ -36,7 +37,7 @@ export default function Home() {
 			case "inspiration":
 				return <MainPage onNavigate={setActiveMenu} mode={menu} />
 			case "works":
-				return <WorksPage />
+				return <WorksPage onNavigate={setActiveMenu} />
 			case "prompts":
 				return <PromptsPage />
 			case "materials":
@@ -58,7 +59,7 @@ export default function Home() {
 	}
 
 	return (
-		<div className="min-h-screen bg-muted/30">
+		<div className="h-dvh overflow-hidden bg-muted/30">
 			{/* 左侧导航栏 */}
 			<Sidebar
 				activeMenu={activeMenu}
@@ -72,7 +73,7 @@ export default function Home() {
 			/>
 
 			{/* 右侧主内容区 */}
-			<div className={`min-h-screen flex flex-col pb-16 transition-[margin] duration-200 lg:pb-0 ${sidebarCollapsed ? "lg:ml-14" : "lg:ml-60"}`}>
+			<div className={`flex h-dvh min-h-0 flex-col overflow-hidden pb-16 transition-[margin] duration-200 lg:pb-0 ${sidebarCollapsed ? "lg:ml-14" : "lg:ml-60"}`}>
 				{/* 固定头部 */}
 				<Header
 					onLoginClick={() => setShowLogin(true)}
@@ -81,7 +82,7 @@ export default function Home() {
 				/>
 
 				{/* 内容区域 */}
-				<main className="flex-1 flex flex-col bg-muted/30">
+				<main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/30">
 					{renderContent()}
 				</main>
 			</div>
@@ -89,6 +90,7 @@ export default function Home() {
 			{/* 登录弹窗 */}
 			<Login open={showLogin} onOpenChange={setShowLogin} />
 			<TaskProgress />
+			<Toaster richColors position="top-center" />
 		</div>
 	);
 }

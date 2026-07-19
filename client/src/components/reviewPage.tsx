@@ -63,7 +63,7 @@ export default function ReviewPage() {
   ]
 
   return (
-    <div className="enter-workspace flex-1 overflow-y-auto px-4 py-5 sm:px-7 sm:py-7">
+    <div className="enter-workspace flex-1 overflow-y-auto px-16 py-8">
       <div className="mx-auto ">
         <div className="mb-7 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
           <div>

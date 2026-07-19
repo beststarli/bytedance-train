@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express'
-import fs from 'fs'
 import path from 'path'
 import { pool } from '../utils/db'
 import { verifyToken } from '../utils/jwt'
 import { chatCompletion, chatCompletionStream, generateImage, generateVideo, detectModelType, chatSummary } from '../utils/ai'
 import type { ModelType } from '../utils/ai'
 import { truncateToTokenLimit, buildMessages, countTokens, DEFAULT_TEXT_CONFIG } from '../utils/context'
+import { deleteUpload, getUpload, objectStorageErrorMessage, saveUpload } from '../utils/objectStorage'
 
 const router: Router = Router()
 
@@ -248,6 +248,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 
 	// Send user message event
 	res.write(`data: ${JSON.stringify({ type: 'user_message', message: userMsg[0] })}\n\n`)
+	res.write(`data: ${JSON.stringify({ type: 'status', message: '正在理解你的创作需求' })}\n\n`)
 
 	try {
 		const modelType: ModelType = model_type && ['text', 'image', 'video'].includes(model_type)
@@ -255,6 +256,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 			: detectModelType(content)
 
 		let fullContent = ''
+		res.write(`data: ${JSON.stringify({ type: 'status', message: modelType === 'text' ? '正在组织文章结构' : '正在准备生成任务' })}\n\n`)
 
 		switch (modelType) {
 			case 'image': {
@@ -288,6 +290,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 				console.log(`[Stream ${req.params.id}] ${finalMessages.length} messages, ~${totalTokens} tokens`)
 
 				const stream = chatCompletionStream(finalMessages)
+				res.write(`data: ${JSON.stringify({ type: 'status', message: '结构已准备，开始生成正文' })}\n\n`)
 
 				for await (const chunk of stream) {
 					fullContent += chunk
@@ -335,6 +338,44 @@ router.get('/prompts', async (_req: Request, res: Response) => {
 		'SELECT id, title, description, content, category, icon, sort_order, is_active, created_at FROM prompts ORDER BY sort_order ASC, created_at ASC'
 	)
 	res.json({ prompts: rows })
+})
+
+router.get('/search', async (req: Request, res: Response) => {
+	const query = String(req.query.q || '').trim()
+	if (query.length < 2) {
+		res.json({ works: [], materials: [], prompts: [] })
+		return
+	}
+
+	const userId = optionalUserId(req)
+	const keyword = `%${query.replace(/[%_]/g, '\\$&')}%`
+	const [worksResult, promptsResult, materialsResult] = await Promise.all([
+		pool.query(
+			`SELECT id, title, 'work' AS type
+			 FROM works
+			 WHERE status = 'published' AND (title ILIKE $1 ESCAPE '\\' OR content ILIKE $1 ESCAPE '\\')
+			 ORDER BY created_at DESC LIMIT 5`,
+			[keyword],
+		),
+		pool.query(
+			`SELECT id, title, category, 'prompt' AS type
+			 FROM prompts
+			 WHERE is_active = true AND (title ILIKE $1 ESCAPE '\\' OR description ILIKE $1 ESCAPE '\\' OR content ILIKE $1 ESCAPE '\\')
+			 ORDER BY sort_order ASC LIMIT 5`,
+			[keyword],
+		),
+		userId
+			? pool.query(
+				`SELECT id, filename AS title, type
+				 FROM materials
+				 WHERE user_id = $2 AND filename ILIKE $1 ESCAPE '\\'
+				 ORDER BY created_at DESC LIMIT 5`,
+				[keyword, userId],
+			)
+			: Promise.resolve({ rows: [] }),
+	])
+
+	res.json({ works: worksResult.rows, prompts: promptsResult.rows, materials: materialsResult.rows })
 })
 
 router.post('/prompts', async (req: Request, res: Response) => {
@@ -412,7 +453,14 @@ router.put('/works/:id', async (req: Request, res: Response) => {
 
 	const { title, content, status } = req.body
 	const { rows } = await pool.query(
-		'UPDATE works SET title = COALESCE($1, title), content = COALESCE($2, content), status = COALESCE($3, status), updated_at = NOW() WHERE id = $4 AND user_id = $5 RETURNING *',
+		`UPDATE works
+		 SET title = COALESCE($1, title),
+			 content = COALESCE($2, content),
+			 status = COALESCE($3, status),
+			 updated_at = NOW(),
+			 created_at = CASE WHEN $3 = 'published' THEN NOW() ELSE created_at END
+		 WHERE id = $4 AND user_id = $5
+		 RETURNING *`,
 		[title, content, status, req.params.id, userId]
 	)
 	res.json({ work: rows[0] || null })
@@ -427,6 +475,25 @@ router.delete('/works/:id', async (req: Request, res: Response) => {
 })
 
 // ==================== Materials ====================
+
+router.get('/assets/:scope/:filename', async (req: Request, res: Response) => {
+	const scope = String(req.params.scope || '')
+	const filename = String(req.params.filename || '')
+	if (!['materials', 'avatars'].includes(scope) || filename !== path.basename(filename)) {
+		res.status(400).json({ error: '资源路径无效' })
+		return
+	}
+	try {
+		const asset = await getUpload(`${scope}/${filename}`)
+		res.setHeader('Content-Type', asset.contentType)
+		res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
+		if (asset.etag) res.setHeader('ETag', asset.etag)
+		res.send(asset.body)
+	} catch (error) {
+		console.error('读取 RustFS 资源失败:', error)
+		res.status(404).json({ error: '资源不存在或暂时不可用' })
+	}
+})
 
 router.get('/materials', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
@@ -460,15 +527,7 @@ router.post('/materials', async (req: Request, res: Response) => {
 		const buffer = Buffer.from(matches[2], 'base64')
 		const ext = filename?.split('.').pop() || (mime.includes('image') ? 'png' : mime.includes('video') ? 'mp4' : 'mp3')
 		const savedName = `mat_${userId}_${Date.now()}.${ext}`
-		const uploadDir = path.join(__dirname, '../../uploads')
-
-		if (!fs.existsSync(uploadDir)) {
-			fs.mkdirSync(uploadDir, { recursive: true })
-		}
-
-		fs.writeFileSync(path.join(uploadDir, savedName), buffer)
-
-		const url = `/uploads/${savedName}`
+		const url = await saveUpload(`materials/${savedName}`, buffer, mime)
 		const fileType = type || (mime.includes('image') ? 'image' : mime.includes('video') ? 'video' : 'other')
 
 		const { rows } = await pool.query(
@@ -479,7 +538,7 @@ router.post('/materials', async (req: Request, res: Response) => {
 		res.json({ material: rows[0] })
 	} catch (err) {
 		console.error('上传素材失败:', err)
-		res.status(500).json({ error: '上传失败' })
+		res.status(502).json({ error: objectStorageErrorMessage(err) })
 	}
 })
 
@@ -487,21 +546,26 @@ router.delete('/materials/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
 
-	const { rows } = await pool.query('SELECT url FROM materials WHERE id = $1 AND user_id = $2', [req.params.id, userId])
-	if (rows[0]?.url) {
-		const filePath = path.join(__dirname, '../../uploads', path.basename(rows[0].url))
-		if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+	try {
+		const { rows } = await pool.query('SELECT url FROM materials WHERE id = $1 AND user_id = $2', [req.params.id, userId])
+		if (!rows[0]) {
+			res.status(404).json({ error: '素材不存在或已删除' })
+			return
+		}
+		await deleteUpload(rows[0].url)
+		await pool.query('DELETE FROM materials WHERE id = $1 AND user_id = $2', [req.params.id, userId])
+		res.json({ message: '已删除' })
+	} catch (error) {
+		console.error('删除素材失败:', error)
+		res.status(502).json({ error: objectStorageErrorMessage(error) })
 	}
-
-	await pool.query('DELETE FROM materials WHERE id = $1 AND user_id = $2', [req.params.id, userId])
-	res.json({ message: '已删除' })
 })
 
 // ==================== Public Feed ====================
 
 router.get('/feed', async (req: Request, res: Response) => {
 	const userId = optionalUserId(req)
-	const allowedSorts = new Set(['hot', 'new', 'quality'])
+	const allowedSorts = new Set(['hot', 'new', 'likes', 'quality'])
 	const requestedSort = (req.query.sort as string) || 'hot'
 	const sort = allowedSorts.has(requestedSort) ? requestedSort : 'hot'
 	const parsedLimit = Number.parseInt(req.query.limit as string, 10)
@@ -511,6 +575,7 @@ router.get('/feed', async (req: Request, res: Response) => {
 
 	let orderBy = 'w.view_count DESC, w.created_at DESC'
 	if (sort === 'new') orderBy = 'w.created_at DESC'
+	else if (sort === 'likes') orderBy = "COUNT(*) FILTER (WHERE r.type = 'like') DESC, w.created_at DESC"
 	else if (sort === 'quality') orderBy = 'w.quality_score DESC NULLS LAST, w.view_count DESC'
 
 	const { rows } = await pool.query(
@@ -548,6 +613,7 @@ router.get('/feed/:id', async (req: Request, res: Response) => {
 		res.status(404).json({ error: '文章不存在' })
 		return
 	}
+	await pool.query('INSERT INTO work_view_events (work_id) VALUES ($1)', [req.params.id])
 	const { rows: articles } = await pool.query(
 		`SELECT w.id, w.title, w.content, w.quality_score, w.view_count, w.created_at,
 				u.nickname, u.avatar_url,
@@ -587,6 +653,24 @@ router.post('/feed/:id/reactions', async (req: Request, res: Response) => {
 	res.json({ active })
 })
 
+router.get('/notifications', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+
+	const { rows } = await pool.query(
+		`SELECT wr.id, wr.type, wr.created_at, w.id AS work_id, w.title AS work_title,
+				COALESCE(actor.nickname, '创作者') AS actor_name, actor.avatar_url
+		 FROM work_reactions wr
+		 JOIN works w ON w.id = wr.work_id
+		 JOIN users actor ON actor.id = wr.user_id
+		 WHERE w.user_id = $1 AND wr.user_id <> $1
+		 ORDER BY wr.created_at DESC
+		 LIMIT 12`,
+		[userId],
+	)
+	res.json({ notifications: rows })
+})
+
 router.get('/creator-dashboard', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -594,8 +678,24 @@ router.get('/creator-dashboard', async (req: Request, res: Response) => {
 		`SELECT COUNT(*)::int AS works,
 				COALESCE(SUM(view_count), 0)::int AS views,
 				COUNT(*) FILTER (WHERE status = 'published')::int AS published,
-				COALESCE(ROUND(AVG(quality_score), 1), 0) AS quality
+				COALESCE(ROUND(AVG(quality_score), 1), 0) AS quality,
+				(SELECT COUNT(*)::int FROM work_reactions wr JOIN works owned ON owned.id = wr.work_id
+				 WHERE owned.user_id = $1 AND wr.type = 'like') AS likes,
+				(SELECT COUNT(*)::int FROM work_reactions wr JOIN works owned ON owned.id = wr.work_id
+				 WHERE owned.user_id = $1 AND wr.type = 'favorite') AS favorites
 		 FROM works WHERE user_id = $1`,
+		[userId],
+	)
+	const { rows: latestWorks } = await pool.query(
+		`SELECT w.id, w.title, w.content, w.created_at, w.view_count,
+				COUNT(*) FILTER (WHERE wr.type = 'like')::int AS like_count,
+				COUNT(*) FILTER (WHERE wr.type = 'favorite')::int AS favorite_count
+		 FROM works w
+		 LEFT JOIN work_reactions wr ON wr.work_id = w.id
+		 WHERE w.user_id = $1 AND w.status = 'published'
+		 GROUP BY w.id
+		 ORDER BY w.created_at DESC
+		 LIMIT 30`,
 		[userId],
 	)
 	const { rows: reactions } = await pool.query(
@@ -604,7 +704,61 @@ router.get('/creator-dashboard', async (req: Request, res: Response) => {
 		 WHERE wr.user_id = $1 ORDER BY wr.created_at DESC LIMIT 12`,
 		[userId],
 	)
-	res.json({ stats: stats[0], reactions })
+	res.json({ stats: stats[0], latestWorks, reactions })
+})
+
+router.get('/creator-dashboard/latest-performance', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	const requestedDays = Number.parseInt(String(req.query.days || '7'), 10)
+	const days = requestedDays === 30 ? 30 : 7
+	const { rows: works } = await pool.query(
+		`SELECT w.id, w.title, w.content, w.created_at, w.view_count,
+				COUNT(*) FILTER (WHERE wr.type = 'like')::int AS like_count,
+				COUNT(*) FILTER (WHERE wr.type = 'favorite')::int AS favorite_count
+		 FROM works w
+		 LEFT JOIN work_reactions wr ON wr.work_id = w.id
+		 WHERE w.user_id = $1 AND w.status = 'published'
+		 GROUP BY w.id
+		 ORDER BY w.created_at DESC
+		 LIMIT 1`,
+		[userId],
+	)
+	const work = works[0]
+	if (!work) {
+		res.json({ work: null, points: [] })
+		return
+	}
+
+	const { rows: viewRows } = await pool.query(
+		`SELECT viewed_at FROM work_view_events WHERE work_id = $1 ORDER BY viewed_at ASC`,
+		[work.id],
+	)
+	const { rows: reactionRows } = await pool.query(
+		`SELECT type, created_at FROM work_reactions WHERE work_id = $1 ORDER BY created_at ASC`,
+		[work.id],
+	)
+	const today = new Date()
+	today.setHours(0, 0, 0, 0)
+	const start = new Date(today)
+	start.setDate(start.getDate() - days + 1)
+	const legacyViews = Math.max(0, Number(work.view_count || 0) - viewRows.length)
+	const publishedAt = new Date(work.created_at)
+
+	const points = Array.from({ length: days }, (_, index) => {
+		const date = new Date(start)
+		date.setDate(start.getDate() + index)
+		const end = new Date(date)
+		end.setDate(end.getDate() + 1)
+		const dateLabel = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+		return {
+			date: dateLabel,
+			views: end <= publishedAt ? 0 : legacyViews + viewRows.filter((event) => new Date(event.viewed_at) < end).length,
+			likes: reactionRows.filter((event) => event.type === 'like' && new Date(event.created_at) < end).length,
+			favorites: reactionRows.filter((event) => event.type === 'favorite' && new Date(event.created_at) < end).length,
+		}
+	})
+	res.json({ work, points })
 })
 
 router.get('/hot-news', async (_req: Request, res: Response) => {

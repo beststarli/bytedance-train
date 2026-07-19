@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { ImageIcon, VideoIcon, Upload, Trash2, FileType } from 'lucide-react'
 import { api } from '@/api/api'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 interface Material {
   id: string
@@ -26,6 +27,9 @@ export default function MaterialsPage() {
   const [materials, setMaterials] = useState<Material[]>([])
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<Material | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = () => {
@@ -57,17 +61,29 @@ export default function MaterialsPage() {
         body: JSON.stringify({ filename: file.name, data: base64, type }),
       })
       load()
-    } catch { alert('上传失败') }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '上传失败')
+    }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
   }
 
-  const handleDelete = async (id: string) => {
-    await api(`/api/content/materials/${id}`, { method: 'DELETE' })
-    load()
+  const handleDelete = async () => {
+    if (!pendingDelete || deleting) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await api(`/api/content/materials/${pendingDelete.id}`, { method: 'DELETE' })
+      setPendingDelete(null)
+      load()
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : '删除失败，请稍后重试')
+    } finally {
+      setDeleting(false)
+    }
   }
 
   return (
-    <div className="enter-workspace flex-1 overflow-y-auto px-7 py-7">
+    <div className="enter-workspace flex-1 overflow-y-auto px-16 py-8">
       <div className="mx-auto">
         <div className="flex items-end justify-between mb-7">
           <div>
@@ -103,7 +119,12 @@ export default function MaterialsPage() {
                       </div>
                     )}
                     <button
-                      onClick={() => handleDelete(m.id)}
+                      onClick={() => {
+                        setDeleteError('')
+                        setPendingDelete(m)
+                      }}
+                      type="button"
+                      aria-label={`删除素材 ${m.filename}`}
                       className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500 transition-all"
                     >
                       <Trash2 className="w-3.5 h-3.5 text-white" />
@@ -119,6 +140,28 @@ export default function MaterialsPage() {
           </div>
         )}
       </div>
+      <Dialog open={!!pendingDelete} onOpenChange={(open) => {
+        if (!open && !deleting) {
+          setPendingDelete(null)
+          setDeleteError('')
+        }
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认删除素材？</DialogTitle>
+            <DialogDescription>
+              删除后，“{pendingDelete?.filename}”将从素材库和云端中永久删除，已经引用该素材的文章可能无法继续显示图片。
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{deleteError}</div>}
+          <DialogFooter className='bg-white pt-0'>
+            <Button variant="outline" onClick={() => setPendingDelete(null)} disabled={deleting}>取消</Button>
+            <Button variant="destructive" onClick={() => void handleDelete()} disabled={deleting}>
+              {deleting ? '删除中…' : '确认删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
