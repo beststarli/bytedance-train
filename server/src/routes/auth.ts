@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto'
-import fs from 'fs'
-import path from 'path'
 import { pool } from '../utils/db'
+import { deleteUpload, saveUpload } from '../utils/objectStorage'
 import {
 	getRefreshTokenExpiresAt,
 	signAccessToken,
@@ -58,6 +57,15 @@ async function createSession(user: { id: string; phone: string }, res: Response)
 	setRefreshCookie(res, refreshToken)
 	return accessToken
 }
+
+// 短信能力已停用；认证只保留账号密码登录与显式注册。
+router.use((req: Request, res: Response, next) => {
+	if (req.method === 'POST' && (req.path === '/send-code' || req.path === '/login')) {
+		res.status(410).json({ error: '短信验证码登录已停用，请使用账号密码登录' })
+		return
+	}
+	next()
+})
 
 // 生成 6 位随机验证码
 function generateCode(): string {
@@ -186,7 +194,7 @@ router.post('/login', async (req: Request, res: Response) => {
 router.get('/me', authMiddleware, async (req: Request, res: Response) => {
 	const userId = req.user!.userId
 	const { rows } = await pool.query(
-		'SELECT id, phone, nickname, avatar_url FROM users WHERE id = $1',
+		'SELECT id, phone, email, nickname, avatar_url FROM users WHERE id = $1',
 		[userId]
 	)
 
@@ -207,8 +215,17 @@ router.put('/profile', authMiddleware, async (req: Request, res: Response) => {
 	let idx = 1
 
 	if (nickname !== undefined) {
+		const normalizedNickname = String(nickname).trim()
+		const { rows: duplicateRows } = await pool.query(
+			'SELECT id FROM users WHERE LOWER(nickname) = LOWER($1) AND id <> $2 LIMIT 1',
+			[normalizedNickname, userId],
+		)
+		if (duplicateRows[0]) {
+			res.status(409).json({ error: '该昵称已被其他用户使用' })
+			return
+		}
 		updates.push(`nickname = $${idx++}`)
-		values.push(nickname)
+		values.push(normalizedNickname)
 	}
 	if (email !== undefined) {
 		updates.push(`email = $${idx++}`)
@@ -257,23 +274,12 @@ router.post('/avatar', authMiddleware, async (req: Request, res: Response) => {
 		const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1]
 		const buffer = Buffer.from(matches[2], 'base64')
 		const filename = `avatar_${userId}_${Date.now()}.${ext}`
-		const uploadDir = path.join(__dirname, '../../uploads')
-
-		// 确保 uploads 目录存在
-		if (!fs.existsSync(uploadDir)) {
-			fs.mkdirSync(uploadDir, { recursive: true })
-		}
-
-		fs.writeFileSync(path.join(uploadDir, filename), buffer)
 
 		// 删除旧头像文件
 		const { rows: old } = await pool.query('SELECT avatar_url FROM users WHERE id = $1', [userId])
-		if (old[0]?.avatar_url) {
-			const oldPath = path.join(uploadDir, path.basename(old[0].avatar_url))
-			if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
-		}
+		await deleteUpload(old[0]?.avatar_url)
 
-		const avatarUrl = `/uploads/${filename}`
+		const avatarUrl = await saveUpload(`avatars/${filename}`, buffer, `image/${matches[1]}`)
 		const { rows } = await pool.query(
 			'UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE id = $2 RETURNING id, phone, email, nickname, avatar_url',
 			[avatarUrl, userId]
@@ -289,31 +295,18 @@ router.post('/avatar', authMiddleware, async (req: Request, res: Response) => {
 // 设置/修改密码
 router.put('/password', authMiddleware, async (req: Request, res: Response) => {
 	const userId = req.user!.userId
-	const { old_password, new_password } = req.body
+	const { new_password, confirm_password } = req.body
 
 	if (!new_password || new_password.length < 6) {
 		res.status(400).json({ error: '密码至少6位' })
 		return
 	}
+	if (new_password !== confirm_password) {
+		res.status(400).json({ error: '两次输入的密码不一致' })
+		return
+	}
 
 	try {
-		const { rows } = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId])
-		const user = rows[0]
-
-		// 如果已有密码，需要验证旧密码
-		if (user.password_hash) {
-			if (!old_password) {
-				res.status(400).json({ error: '请输入当前密码' })
-				return
-			}
-			const [salt, key] = user.password_hash.split(':')
-			const oldHash = scryptSync(old_password, salt, 64).toString('hex')
-			if (!timingSafeEqual(Buffer.from(key), Buffer.from(oldHash))) {
-				res.status(400).json({ error: '当前密码不正确' })
-				return
-			}
-		}
-
 		const salt = randomBytes(16).toString('hex')
 		const hash = scryptSync(new_password, salt, 64).toString('hex')
 		await pool.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [`${salt}:${hash}`, userId])
@@ -326,6 +319,86 @@ router.put('/password', authMiddleware, async (req: Request, res: Response) => {
 })
 
 // 密码登录
+router.post('/register', async (req: Request, res: Response) => {
+	const nickname = String(req.body.nickname || '').trim()
+	const phone = String(req.body.phone || '').trim()
+	const email = String(req.body.email || '').trim().toLowerCase()
+	const password = String(req.body.password || '')
+	const confirmPassword = String(req.body.confirm_password || '')
+
+	if (nickname.length < 2 || nickname.length > 50) {
+		res.status(400).json({ error: '昵称长度应为 2 至 50 个字符' })
+		return
+	}
+	if (!/^1\d{10}$/.test(phone)) {
+		res.status(400).json({ error: '手机号格式不正确' })
+		return
+	}
+	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+		res.status(400).json({ error: '邮箱格式不正确' })
+		return
+	}
+	if (password.length < 6) {
+		res.status(400).json({ error: '密码至少 6 位' })
+		return
+	}
+	if (password !== confirmPassword) {
+		res.status(400).json({ error: '两次输入的密码不一致' })
+		return
+	}
+
+	const client = await pool.connect()
+	try {
+		await client.query('BEGIN')
+		await client.query(`SELECT pg_advisory_xact_lock(hashtext('user-registration'))`)
+		const { rows: duplicates } = await client.query(
+			`SELECT
+				EXISTS(SELECT 1 FROM users WHERE phone = $1) AS phone_exists,
+				EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($2)) AS email_exists,
+				EXISTS(SELECT 1 FROM users WHERE LOWER(nickname) = LOWER($3)) AS nickname_exists`,
+			[phone, email, nickname],
+		)
+		if (duplicates[0].nickname_exists) {
+			await client.query('ROLLBACK')
+			res.status(409).json({ error: '该昵称已被注册' })
+			return
+		}
+		if (duplicates[0].phone_exists) {
+			await client.query('ROLLBACK')
+			res.status(409).json({ error: '该手机号已被注册' })
+			return
+		}
+		if (duplicates[0].email_exists) {
+			await client.query('ROLLBACK')
+			res.status(409).json({ error: '该邮箱已被注册' })
+			return
+		}
+
+		const salt = randomBytes(16).toString('hex')
+		const hash = scryptSync(password, salt, 64).toString('hex')
+		const { rows } = await client.query(
+			`INSERT INTO users (nickname, phone, email, password_hash)
+			 VALUES ($1, $2, $3, $4)
+			 RETURNING id, phone, email, nickname, avatar_url`,
+			[nickname, phone, email, `${salt}:${hash}`],
+		)
+		await client.query('COMMIT')
+		const user = rows[0]
+		const accessToken = await createSession(user, res)
+		res.status(201).json({ accessToken, user })
+	} catch (err: any) {
+		await client.query('ROLLBACK').catch(() => undefined)
+		if (err?.code === '23505') {
+			res.status(409).json({ error: '昵称、手机号或邮箱已被注册' })
+			return
+		}
+		console.error('注册失败:', err)
+		res.status(500).json({ error: '注册失败' })
+	} finally {
+		client.release()
+	}
+})
+
 router.post('/login-password', async (req: Request, res: Response) => {
 	const { account, password } = req.body
 
@@ -336,7 +409,7 @@ router.post('/login-password', async (req: Request, res: Response) => {
 
 	try {
 		const { rows } = await pool.query(
-			'SELECT * FROM users WHERE phone = $1 OR email = $1',
+			'SELECT * FROM users WHERE phone = $1 OR LOWER(email) = LOWER($1)',
 			[account]
 		)
 

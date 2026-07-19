@@ -10,6 +10,7 @@ dotenv_1.default.config({ path: '../.env' });
 const auth_1 = __importDefault(require("./src/routes/auth"));
 const content_1 = __importDefault(require("./src/routes/content"));
 const db_1 = require("./src/utils/db");
+const objectStorage_1 = require("./src/utils/objectStorage");
 // 启动时自动执行数据库迁移（幂等）
 async function runMigrations() {
     try {
@@ -66,6 +67,15 @@ async function runMigrations() {
 			CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
 		`);
         console.log('✓ 数据库迁移完成');
+        if ((0, objectStorage_1.objectStorageConfigured)()) {
+            try {
+                await (0, objectStorage_1.migrateLocalUploadsToObjectStorage)();
+                console.log('✓ RustFS 对象存储已连接，本地资源迁移完成');
+            }
+            catch (error) {
+                console.error('× RustFS 连接或资源迁移失败，服务将继续启动：', error);
+            }
+        }
     }
     catch (err) {
         console.error('× 数据库迁移失败:', err);
@@ -75,8 +85,9 @@ async function runMigrations() {
 const app = (0, express_1.default)();
 const PORT = process.env.Server_Port || 4001;
 // 中间件
-app.use(express_1.default.json({ limit: '5mb' }));
-app.use(express_1.default.urlencoded({ extended: true, limit: '5mb' }));
+// Base64 会比原文件大约增加 1/3，需覆盖前端允许的 10MB 素材。
+app.use(express_1.default.json({ limit: '20mb' }));
+app.use(express_1.default.urlencoded({ extended: true, limit: '20mb' }));
 // 静态文件服务（头像等上传文件）
 app.use('/uploads', express_1.default.static(path_1.default.join(__dirname, 'uploads')));
 // 路由

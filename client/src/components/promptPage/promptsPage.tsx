@@ -21,23 +21,27 @@ interface Prompt {
 
 const CATEGORY_MAP: Record<string, { label: string; icon: React.ReactNode }> = {
 	article: { label: '文章创作', icon: <FileText className="w-4 h-4" /> },
+	writing: { label: '文章写作', icon: <FileText className="w-4 h-4" /> },
 	image: { label: '图片生成', icon: <ImageIcon className="w-4 h-4" /> },
 	video: { label: '视频创作', icon: <Video className="w-4 h-4" /> },
 	general: { label: '通用优化', icon: <Sparkles className="w-4 h-4" /> },
+	optimize: { label: '内容优化', icon: <Sparkles className="w-4 h-4" /> },
 }
 
 const CATEGORY_OPTIONS = [
-	{ key: 'article', label: '文章' },
+	{ key: 'writing', label: '写作' },
 	{ key: 'image', label: '图片' },
 	{ key: 'video', label: '视频' },
-	{ key: 'general', label: '优化' },
+	{ key: 'optimize', label: '优化' },
 ] as const
 
 const CATEGORY_ICON_MAP: Record<string, string> = {
 	article: 'FileText',
+	writing: 'FileText',
 	image: 'ImageIcon',
 	video: 'Video',
 	general: 'Sparkles',
+	optimize: 'Sparkles',
 }
 
 export default function PromptsPage() {
@@ -45,7 +49,7 @@ export default function PromptsPage() {
 	const [loading, setLoading] = useState(true)
 	const [editing, setEditing] = useState<Prompt | null>(null)
 	const [showForm, setShowForm] = useState(false)
-	const [form, setForm] = useState({ title: '', description: '', content: '', category: 'article', icon: 'FileText' })
+	const [form, setForm] = useState({ title: '', description: '', content: '', category: 'writing', icon: 'FileText' })
 	const [saving, setSaving] = useState(false)
 
 	const load = () => {
@@ -66,7 +70,7 @@ export default function PromptsPage() {
 		setSaving(false)
 		setShowForm(false)
 		setEditing(null)
-		setForm({ title: '', description: '', content: '', category: 'article', icon: 'FileText' })
+		setForm({ title: '', description: '', content: '', category: 'writing', icon: 'FileText' })
 		load()
 	}
 
@@ -87,14 +91,14 @@ export default function PromptsPage() {
 
 	const openNew = () => {
 		setEditing(null)
-		setForm({ title: '', description: '', content: '', category: 'article', icon: 'FileText' })
+		setForm({ title: '', description: '', content: '', category: 'writing', icon: 'FileText' })
 		setShowForm(true)
 	}
 
 	const categories = useMemo(() => {
 		const keys = [...new Set(prompts.map((p) => p.category))]
 		// 把已知分类按固定顺序排列，未知分类放最后
-		const known = ['article', 'image', 'video', 'general']
+		const known = ['writing', 'image', 'video', 'optimize', 'article', 'general']
 		return [
 			...known.filter((k) => keys.includes(k)),
 			...keys.filter((k) => !known.includes(k)),
@@ -113,7 +117,7 @@ export default function PromptsPage() {
 			<div className="mx-auto">
 				<div className="flex items-end justify-between mb-7">
 					<div>
-						<div className="workspace-label mb-2">提示词系统</div>
+						<div className="workspace-label mb-2">Prompt Template</div>
 						<h1 className="text-2xl font-bold">提示词模版</h1>
 						<p className="text-sm text-muted-foreground mt-1.5">沉淀可复用的创作方法，让 AI 输出保持稳定</p>
 					</div>
