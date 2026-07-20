@@ -1,13 +1,15 @@
 import OpenAI from 'openai'
 
+const arkApiKey = process.env.ARK_API_KEY || process.env.Volcengine_ACCESS_API_KEY || ''
+
 const client = new OpenAI({
     baseURL: process.env.VOLC_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3',
-    apiKey: process.env.Volcengine_ACCESS_API_KEY || '',
+    apiKey: arkApiKey,
 })
 
 function assertAiConfiguration() {
-    if (!process.env.Volcengine_ACCESS_API_KEY?.trim()) {
-        throw new Error('AI 服务未配置：缺少 Volcengine_ACCESS_API_KEY')
+    if (!arkApiKey.trim()) {
+        throw new Error('AI 服务未配置：缺少 ARK_API_KEY')
     }
 }
 
@@ -15,7 +17,7 @@ function assertAiConfiguration() {
 const models: Record<string, string> = {
     text: process.env.VOLC_MODEL_TEXT || 'doubao-seed-2-0-lite-260215',
     text_legacy: process.env.VOLC_MODEL_TEXT_LEGACY || 'doubao-seed-character-251128',
-    image: process.env.VOLC_MODEL_IMAGE || 'doubao-seedream-4-0-250828',
+    image: process.env.VOLC_MODEL_IMAGE || 'doubao-seedream-5-0-260128',
     video: process.env.VOLC_MODEL_VIDEO || 'doubao-seedance-1-0-pro-fast-251015',
     summary: process.env.VOLC_MODEL_SUMMARY || 'doubao-seed-2-0-lite-260215',
 }
@@ -62,10 +64,11 @@ export async function generateImage(prompt: string): Promise<string[]> {
     const response = await client.images.generate({
         model: models.image as string,
         prompt,
-        n: 1,
-        size: '1024x1024',
-    })
-    return response.data?.map((img) => img.url || '') ?? []
+        size: '2K' as '1024x1024',
+        response_format: 'url',
+        watermark: false,
+    } as OpenAI.Images.ImageGenerateParamsNonStreaming & { watermark: boolean })
+    return response.data?.map((img) => img.url || '').filter(Boolean) ?? []
 }
 
 // ===== 文生视频 (Seedance) =====

@@ -26,6 +26,8 @@ import {
 	List,
 	Link2,
 	Code2,
+	FolderPlus,
+	Loader2,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/userStore'
 import { api, getValidAccessToken } from '@/api/api'
@@ -66,6 +68,7 @@ interface Material {
 	filename: string
 	url: string
 	type: string
+	source_url?: string | null
 }
 
 const iconMap: Record<string, React.ElementType> = {
@@ -81,6 +84,18 @@ const promptCategoryMeta: Record<string, { title: string; description: string; i
 	general: { title: '通用优化', description: '润色、改写与观点整理', icon: Sparkles },
 }
 
+const promptCategoryDefinitions = [
+	{ id: 'writing', aliases: ['writing', 'article'], ...promptCategoryMeta.writing },
+	{ id: 'image', aliases: ['image'], ...promptCategoryMeta.image },
+	{ id: 'video', aliases: ['video'], ...promptCategoryMeta.video },
+	{ id: 'optimize', aliases: ['optimize', 'general'], ...promptCategoryMeta.optimize },
+]
+
+function promptBelongsToCategory(prompt: Prompt, categoryId: string | null) {
+	if (!categoryId) return false
+	return promptCategoryDefinitions.find((category) => category.id === categoryId)?.aliases.includes(prompt.category) ?? false
+}
+
 function resizeInputTextarea(el: HTMLTextAreaElement) {
 	el.style.height = 'auto'
 	el.style.height = `${Math.min(el.scrollHeight, 200)}px`
@@ -94,10 +109,102 @@ function renderInlineMarkdown(text: string) {
 	})
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function GeneratedImageFigure({
+	imageUrl,
+	alt,
+	onImportImage,
+	onInsertImage,
+	importing,
+	imported,
+}: {
+	imageUrl: string
+	alt: string
+	onImportImage?: (url: string) => void
+	onInsertImage?: (url: string) => void
+	importing?: boolean
+	imported?: boolean
+}) {
+	const [loaded, setLoaded] = useState(false)
+
+	return (
+		<figure className="group relative my-2 aspect-square w-[min(420px,70vw)] max-w-full overflow-hidden rounded-xl border bg-muted/30">
+			{!loaded && (
+				<div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-gradient-to-br from-slate-100 via-white to-red-50">
+					<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/80 to-transparent" />
+					<div className="relative flex flex-col items-center gap-2 text-muted-foreground">
+						<span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white shadow-sm">
+							<ImageIcon className="h-5 w-5 text-red-400" />
+						</span>
+						<span className="text-[11px]">正在加载生成图片…</span>
+					</div>
+				</div>
+			)}
+			<img
+				src={imageUrl}
+				alt={alt}
+				onLoad={() => setLoaded(true)}
+				onError={() => setLoaded(true)}
+				className={cn('h-full w-full object-contain transition-opacity duration-300', loaded ? 'opacity-100' : 'opacity-0')}
+			/>
+			{loaded && (onInsertImage || onImportImage) && (
+				<div className="absolute bottom-3 right-3 flex items-center gap-2">
+					{onInsertImage && (
+						<button
+							type="button"
+							onClick={() => onInsertImage(imageUrl)}
+							className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-red-600"
+						>
+							<FileText className="h-3.5 w-3.5" />
+							插入正文
+						</button>
+					)}
+					{onImportImage && (
+						<button
+							type="button"
+							disabled={importing || imported}
+							onClick={() => onImportImage(imageUrl)}
+							className="inline-flex items-center gap-1.5 rounded-md bg-black/70 px-3 py-2 text-xs font-medium text-white shadow-sm backdrop-blur transition hover:bg-black/85 disabled:cursor-default disabled:bg-emerald-600/90"
+						>
+							{importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderPlus className="h-3.5 w-3.5" />}
+							{importing ? '添加中…' : imported ? '已添加素材库' : '添加到素材库'}
+						</button>
+					)}
+				</div>
+			)}
+		</figure>
+	)
+}
+
+function MarkdownContent({
+	content,
+	onImportImage,
+	onInsertImage,
+	importingUrls,
+	importedUrls,
+}: {
+	content: string
+	onImportImage?: (url: string) => void
+	onInsertImage?: (url: string) => void
+	importingUrls?: Set<string>
+	importedUrls?: Set<string>
+}) {
 	return <div className="space-y-2">{content.split('\n').map((line, index) => {
 		const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
-		if (image) return <figure key={index} className="my-4 flex justify-center"><img src={image[2]} alt="" className="max-h-[420px] max-w-full rounded-lg object-contain" /></figure>
+		const legacyImage = line.trim().match(/^(https?:\/\/\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?)$/i)
+		const imageUrl = image?.[2] || legacyImage?.[1]
+		if (imageUrl) {
+			return (
+				<GeneratedImageFigure
+					key={index}
+					imageUrl={imageUrl}
+					alt={image?.[1] || 'AI 生成图片'}
+					onImportImage={onImportImage}
+					onInsertImage={onInsertImage}
+					importing={importingUrls?.has(imageUrl)}
+					imported={importedUrls?.has(imageUrl)}
+				/>
+			)
+		}
 		if (line.startsWith('### ')) return <h3 key={index} className="pt-2 text-base font-bold">{renderInlineMarkdown(line.slice(4))}</h3>
 		if (line.startsWith('## ')) return <h2 key={index} className="pt-2 text-lg font-bold">{renderInlineMarkdown(line.slice(3))}</h2>
 		if (line.startsWith('# ')) return <h1 key={index} className="pt-2 text-xl font-bold">{renderInlineMarkdown(line.slice(2))}</h1>
@@ -107,6 +214,18 @@ function MarkdownContent({ content }: { content: string }) {
 		if (!line.trim()) return <div key={index} className="h-1" />
 		return <p key={index}>{renderInlineMarkdown(line)}</p>
 	})}</div>
+}
+
+function articleFromAssistantMessage(content: string) {
+	const trimmed = content.trim()
+	if (/^https?:\/\/\S+\.(png|jpe?g|gif|webp)(\?\S*)?$/i.test(trimmed)) {
+		return { title: '', content: `![AI 生成图片](${trimmed})` }
+	}
+	const lines = trimmed.split('\n')
+	const titleIndex = lines.findIndex((line) => /^#\s+/.test(line.trim()))
+	const title = titleIndex >= 0 ? lines[titleIndex].trim().replace(/^#\s+/, '').trim() : ''
+	if (titleIndex >= 0) lines.splice(titleIndex, 1)
+	return { title, content: lines.join('\n').trim() }
 }
 
 function escapeHtml(value: string) {
@@ -303,27 +422,30 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const [messages, setMessages] = useState<Message[]>([])
 	const [prompts, setPrompts] = useState<Prompt[]>([])
 	const [materials, setMaterials] = useState<Material[]>([])
+	const [importingImageUrls, setImportingImageUrls] = useState<Set<string>>(new Set())
 	const [inputValue, setInputValue] = useState('')
 	const [modelType, setModelType] = useState<string | undefined>(undefined)
 	const [loadingChats, setLoadingChats] = useState(true)
 	const [sending, setSending] = useState(false)
 	const [thinkingStage, setThinkingStage] = useState("")
+	const [activeGenerationType, setActiveGenerationType] = useState<'text' | 'image' | 'video'>('text')
 	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>('ai')
-	const { id: editingWorkId, title: draftTitle, content: draftContent, setTitle: setDraftTitle, setContent: setDraftContent, markSaved } = useEditorStore()
+	const { id: editingWorkId, title: draftTitle, content: draftContent, setTitle: setDraftTitle, setContent: setDraftContent, markSaved, clear: clearEditor } = useEditorStore()
 	const [publishing, setPublishing] = useState(false)
+	const [showClearEditorDialog, setShowClearEditorDialog] = useState(false)
+	const [clearingEditor, setClearingEditor] = useState(false)
 	const [deleteChatTarget, setDeleteChatTarget] = useState<Chat | null>(null)
 	const [selectedPromptCategory, setSelectedPromptCategory] = useState<string | null>(null)
 	const messagesEndRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	const draftEditorRef = useRef<HTMLDivElement>(null)
 	const streamingChatIdRef = useRef<string | null>(null)
-	const promptCategories = useMemo(() => {
-		const categoryIds = [...new Set(prompts.filter((prompt) => prompt.is_active !== false).map((prompt) => prompt.category))]
-		return categoryIds.map((id) => ({
-			id,
-			...(promptCategoryMeta[id] || { title: id, description: '自定义提示词类别', icon: Sparkles }),
-		}))
-	}, [prompts])
+	const requestCounter = useRef(0)
+	const promptCategories = promptCategoryDefinitions
+	const importedImageUrls = useMemo(
+		() => new Set(materials.map((material) => material.source_url).filter((url): url is string => Boolean(url))),
+		[materials],
+	)
 
 	// 加载聊天列表 + prompt 模板
 	useEffect(() => {
@@ -362,16 +484,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
 	}, [messages])
 
-	// 新建聊天
-	const handleNewChat = useCallback(async () => {
-		const data = await api<{ chat: Chat }>('/api/content/chats', {
-			method: 'POST',
-			body: JSON.stringify({ title: '新对话' }),
-		})
-		setChats((prev) => [data.chat, ...prev])
-		setActiveChatId(data.chat.id)
+	// 回到新对话起始页；首次发送时再创建服务端会话，避免产生空对话。
+	const handleNewChat = useCallback(() => {
+		if (sending) return
+		requestCounter.current += 1
+		setActiveChatId(null)
 		setMessages([])
-	}, [])
+		setInputValue('')
+		setModelType(undefined)
+		setSelectedPromptCategory(null)
+		requestAnimationFrame(() => inputRef.current?.focus())
+	}, [sending])
 
 	// 删除聊天
 	const handleDeleteChat = useCallback(async () => {
@@ -385,8 +508,6 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setDeleteChatTarget(null)
 	}, [activeChatId, deleteChatTarget])
 
-	const requestCounter = useRef(0)
-
 	// ===== SSE 流式发送消息（文生文 / 图 / 视频通用） =====
 	const sendStreamingMessage = useCallback(async (chatId: string, content: string): Promise<void> => {
 		if (sending || !content.trim()) return
@@ -394,7 +515,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		const trimmedContent = content.trim()
 		setInputValue('')
 		setSending(true)
-		setThinkingStage('正在理解你的创作需求')
+		setActiveGenerationType(modelType === 'image' ? 'image' : modelType === 'video' ? 'video' : 'text')
+		setThinkingStage(modelType === 'image' ? 'AI 正在绘制图片' : modelType === 'video' ? 'AI 正在生成视频' : 'AI 正在思考')
 		streamingChatIdRef.current = chatId
 
 		const requestId = ++requestCounter.current
@@ -418,6 +540,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			created_at: new Date().toISOString(),
 		}])
 
+		let revealCancelled = false
 		try {
 			const token = await getValidAccessToken()
 			const response = await fetch(`/api/content/chats/${chatId}/generate-stream`, {
@@ -435,7 +558,35 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			const decoder = new TextDecoder()
 			let buffer = ''
 			let accumulatedContent = ''
+			let queuedContent = ''
+			let displayedContent = ''
+			let streamFinished = false
+			let revealPromise: Promise<void> | null = null
 			let finalMessage: Message | null = null
+
+			const startReveal = () => {
+				if (revealPromise) return
+				revealPromise = (async () => {
+					while (!revealCancelled && (!streamFinished || queuedContent.length > 0)) {
+						if (!queuedContent.length) {
+							await new Promise((resolve) => setTimeout(resolve, 16))
+							continue
+						}
+						// 积压较多时适当追赶网络流，积压较少时保持清晰的逐字效果。
+						const step = queuedContent.length > 600 ? 12 : queuedContent.length > 200 ? 6 : queuedContent.length > 60 ? 3 : 1
+						displayedContent += queuedContent.slice(0, step)
+						queuedContent = queuedContent.slice(step)
+						if (requestId === requestCounter.current) {
+							setMessages((prev) =>
+								prev.map((message) =>
+									message.id === aiId ? { ...message, content: displayedContent } : message
+								)
+							)
+						}
+						await new Promise((resolve) => setTimeout(resolve, 16))
+					}
+				})()
+			}
 
 			while (true) {
 				const { done, value } = await reader.read()
@@ -455,6 +606,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						switch (data.type) {
 							case 'status':
 								setThinkingStage(data.message)
+								if (data.model_type === 'text' || data.model_type === 'image' || data.model_type === 'video') {
+									setActiveGenerationType(data.model_type)
+								}
 								break
 							case 'user_message':
 								// 用服务端返回的消息替换临时消息
@@ -464,12 +618,19 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								break
 
 							case 'chunk':
-								setThinkingStage('正在流式生成内容')
+								setThinkingStage('AI 正在思考')
 								accumulatedContent += data.content
-								// 渐进式更新 AI 消息内容
+								queuedContent += data.content
+								startReveal()
+								break
+
+							case 'image':
+								accumulatedContent = data.content
+								displayedContent = data.content
+								setThinkingStage('')
 								setMessages((prev) =>
-									prev.map((m) =>
-										m.id === aiId ? { ...m, content: accumulatedContent } : m
+									prev.map((message) =>
+										message.id === aiId ? { ...message, content: data.content } : message
 									)
 								)
 								break
@@ -488,6 +649,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 				}
 			}
 
+			streamFinished = true
+			if (revealPromise) await revealPromise
+
 			// 如果用户在此期间切换了聊天，丢弃本次结果
 			if (requestId !== requestCounter.current) return
 
@@ -504,9 +668,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			setThinkingStage('')
 			streamingChatIdRef.current = null
 			// 刷新聊天列表（标题可能已更新）
-			const chatData = await api<{ chats: Chat[] }>('/api/content/chats')
+			const [chatData, materialData] = await Promise.all([
+				api<{ chats: Chat[] }>('/api/content/chats'),
+				api<{ materials: Material[] }>('/api/content/materials'),
+			])
 			setChats(chatData.chats)
+			setMaterials(materialData.materials)
 		} catch {
+			revealCancelled = true
 			// 保留用户输入，并将 AI 占位改为可见的失败提示
 			setMessages((prev) =>
 				prev.map((m) =>
@@ -597,6 +766,70 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setDraftContent(`${draftContent}${draftContent.trim() ? '\n\n' : ''}${markdown}\n`)
 	}, [draftContent, setDraftContent])
 
+	const importAssistantMessage = useCallback((content: string) => {
+		const article = articleFromAssistantMessage(content)
+		if (!article.content) return
+		if (!draftTitle.trim() && article.title) setDraftTitle(article.title)
+		setDraftContent(`${draftContent}${draftContent.trim() ? '\n\n' : ''}${article.content}`)
+		emitTaskProgress({ title: '已导入内容写作台', status: 'success', message: '你可以继续编辑、保存草稿或发布' })
+		if (!window.matchMedia('(min-width: 1024px)').matches) setCreationMode('manual')
+	}, [draftContent, draftTitle, setDraftContent, setDraftTitle])
+
+	const importImageToMaterials = useCallback(async (messageId: string, url: string) => {
+		setImportingImageUrls((current) => new Set(current).add(url))
+		try {
+			const data = await api<{ material: Material; already_exists: boolean }>(`/api/content/messages/${messageId}/import-image`, {
+				method: 'POST',
+				body: JSON.stringify({ url }),
+			})
+			setMaterials((current) => {
+				const withoutDuplicate = current.filter((material) => material.id !== data.material.id)
+				return [data.material, ...withoutDuplicate]
+			})
+			emitTaskProgress({
+				title: data.already_exists ? '图片已在素材库中' : '已添加到素材库',
+				status: 'success',
+				message: '现在可以将图片拖入或插入文章正文',
+			})
+		} catch (error) {
+			emitTaskProgress({ title: '添加素材失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
+		} finally {
+			setImportingImageUrls((current) => {
+				const next = new Set(current)
+				next.delete(url)
+				return next
+			})
+		}
+	}, [])
+
+	const insertGeneratedImage = useCallback((url: string) => {
+		const markdown = `![AI 生成图片](${url})`
+		const editor = draftEditorRef.current
+		const selection = window.getSelection()
+		if (editor && selection?.rangeCount) {
+			const range = selection.getRangeAt(0)
+			if (editor.contains(range.commonAncestorContainer)) {
+				const holder = document.createElement('div')
+				holder.innerHTML = markdownToEditorHtml(markdown)
+				const imageNode = holder.firstElementChild
+				if (imageNode) {
+					range.deleteContents()
+					range.insertNode(imageNode)
+					range.setStartAfter(imageNode)
+					range.collapse(true)
+					selection.removeAllRanges()
+					selection.addRange(range)
+					editor.dispatchEvent(new InputEvent('input', { bubbles: true }))
+					emitTaskProgress({ title: '图片已插入正文', status: 'success', message: '图片未保存到素材库' })
+					return
+				}
+			}
+		}
+		setDraftContent(`${draftContent}${draftContent.trim() ? '\n\n' : ''}${markdown}\n`)
+		emitTaskProgress({ title: '图片已插入正文', status: 'success', message: '图片未保存到素材库' })
+		if (!window.matchMedia('(min-width: 1024px)').matches) setCreationMode('manual')
+	}, [draftContent, setDraftContent])
+
 	const insertFormatting = useCallback((before: string, after = '', placeholder = '文本') => {
 		const editor = draftEditorRef.current
 		if (!editor) return
@@ -635,13 +868,71 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			})
 			markSaved(data.work.id)
 			emitTaskProgress({ title: status === 'published' ? '文章发布成功' : '草稿保存成功', status: 'success', message: '内容已同步' })
-			if (status === 'published') onNavigate?.('dashboard')
+			if (status === 'published') {
+				clearEditor()
+				onNavigate?.('dashboard')
+			}
 		} catch (error) {
 			emitTaskProgress({ title: '操作失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
 		} finally {
 			setPublishing(false)
 		}
 	}
+
+	const requestClearEditor = () => {
+		if (!draftTitle.trim() && !draftContent.trim()) {
+			clearEditor()
+			emitTaskProgress({ title: '写作台已清空', status: 'success' })
+			return
+		}
+		setShowClearEditorDialog(true)
+	}
+
+	const saveDraftAndClear = async () => {
+		setClearingEditor(true)
+		try {
+			const data = await api<{ work: { id: string } }>(editingWorkId ? `/api/content/works/${editingWorkId}` : '/api/content/works', {
+				method: editingWorkId ? 'PUT' : 'POST',
+				body: JSON.stringify({
+					title: draftTitle.trim() || '未输入标题',
+					content: draftContent.trim(),
+					status: 'draft',
+				}),
+			})
+			markSaved(data.work.id)
+			clearEditor()
+			setShowClearEditorDialog(false)
+			emitTaskProgress({ title: '草稿已保存，写作台已清空', status: 'success', message: '可在作品管理中继续编辑' })
+		} catch (error) {
+			emitTaskProgress({ title: '草稿保存失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
+		} finally {
+			setClearingEditor(false)
+		}
+	}
+
+	const discardAndClear = () => {
+		clearEditor()
+		setShowClearEditorDialog(false)
+		emitTaskProgress({ title: '内容已丢弃，写作台已清空', status: 'success' })
+	}
+
+	const clearEditorDialog = (
+		<Dialog open={showClearEditorDialog} onOpenChange={(open) => !clearingEditor && setShowClearEditorDialog(open)}>
+			<DialogContent className="sm:max-w-md">
+				<DialogHeader>
+					<DialogTitle>清空内容写作台？</DialogTitle>
+					<DialogDescription>当前写作台还有内容。是否先将它保存为草稿？未填写标题时将使用“未输入标题”。</DialogDescription>
+				</DialogHeader>
+				<div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+					<Button variant="destructive" disabled={clearingEditor} onClick={discardAndClear}>直接丢弃</Button>
+					<Button disabled={clearingEditor} onClick={() => void saveDraftAndClear()} className="bg-red-500 text-white hover:bg-red-600">
+						{clearingEditor && <Loader2 className="h-4 w-4 animate-spin" />}
+						{clearingEditor ? '保存中…' : '存为草稿并清空'}
+					</Button>
+				</div>
+			</DialogContent>
+		</Dialog>
+	)
 
 	if (!creationMode) {
 		return (
@@ -673,22 +964,29 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 	if (creationMode === 'manual') {
 		return (
-			<div className="enter-workspace scrollBar-hidden flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-				<div className="mx-auto max-w-4xl">
-					<div className="mb-5 flex items-center justify-between gap-4">
-						<div><button type="button" onClick={() => setCreationMode(null)} className="text-xs text-muted-foreground hover:text-red-500">← 返回创作方式</button><h1 className="mt-2 text-xl font-bold">内容写作台</h1></div>
-						<div className="flex gap-2"><Button variant="outline" disabled={publishing} onClick={() => void handlePublish('draft')}>保存草稿</Button><Button disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button></div>
-					</div>
-					<div className="workspace-card overflow-hidden">
-						<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} placeholder="输入文章标题" className="w-full border-b bg-transparent px-7 py-6 text-2xl font-bold outline-none placeholder:text-muted-foreground/40" />
-						<InlineArticleEditor
-							content={draftContent}
-							onChange={setDraftContent}
-							editorRef={draftEditorRef}
-						/>
+			<>
+				<div className="enter-workspace scrollBar-hidden flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+					<div className="mx-auto max-w-4xl">
+						<div className="mb-5 flex items-center justify-between gap-4">
+							<div><button type="button" onClick={() => setCreationMode(null)} className="text-xs text-muted-foreground hover:text-red-500">← 返回创作方式</button><h1 className="mt-2 text-xl font-bold">内容写作台</h1></div>
+							<div className="flex gap-2">
+								<Button variant="ghost" disabled={publishing} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" />清空写作台</Button>
+								<Button variant="outline" disabled={publishing} onClick={() => void handlePublish('draft')}>保存草稿</Button>
+								<Button disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
+							</div>
+						</div>
+						<div className="workspace-card overflow-hidden">
+							<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} placeholder="输入文章标题" className="w-full border-b bg-transparent px-7 py-6 text-2xl font-bold outline-none placeholder:text-muted-foreground/40" />
+							<InlineArticleEditor
+								content={draftContent}
+								onChange={setDraftContent}
+								editorRef={draftEditorRef}
+							/>
+						</div>
 					</div>
 				</div>
-			</div>
+				{clearEditorDialog}
+			</>
 		)
 	}
 
@@ -698,7 +996,11 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 				<div className="shrink-0 border-b px-5 pt-3 pb-1">
 					<div className="flex items-center justify-between gap-3">
 						<div><div className="text-sm font-bold">内容写作台</div><div className="mt-1 text-[10px] text-muted-foreground">内容会在发布前保留在当前工作区</div></div>
-						<div className="flex gap-2"><Button variant="outline" size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button><Button size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button></div>
+						<div className="flex gap-2">
+							<Button variant="ghost" size="sm" disabled={publishing} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" />清空</Button>
+							<Button variant="outline" size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button>
+							<Button size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
+						</div>
 					</div>
 					<div className=" flex flex-wrap items-center gap-1">
 						{[
@@ -832,29 +1134,65 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 												)}
 												<div
 													className={cn(
-														'max-w-[75%] rounded-xl px-4 py-3.5 text-sm leading-6 whitespace-pre-wrap border',
-														msg.role === 'user'
-															? 'bg-red-500 border-red-500 text-white rounded-br-md'
-															: 'bg-background text-foreground rounded-bl-md shadow-sm'
+														'max-w-[75%] text-sm leading-6 whitespace-pre-wrap',
+														msg.role === 'assistant' && !msg.content && sending && activeGenerationType === 'image'
+															? 'border-0 bg-transparent p-0 shadow-none'
+															: msg.role === 'user'
+																? 'rounded-xl rounded-br-md border border-red-500 bg-red-500 px-4 py-3.5 text-white'
+																: 'rounded-xl rounded-bl-md border bg-background px-4 py-3.5 text-foreground shadow-sm'
 													)}
 												>
 													{msg.role === 'assistant' && !msg.content && sending ? (
-														<div className="flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-label={thinkingStage || "AI 正在生成"}>
-															<span className="flex items-center gap-1">
-																<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '0ms' }} />
-																<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '150ms' }} />
-																<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '300ms' }} />
-															</span>
-															<span>{thinkingStage || "正在准备回答"}</span>
-														</div>
-													) : (() => {
-														const isImage = msg.role === 'assistant' && /^https?:\/\/.+\.(png|jpg|jpeg|gif|webp)(\?|$)/i.test(msg.content)
-														return isImage ? (
-															<img src={msg.content} alt="生成的图片" className="max-w-full rounded-lg" />
+														activeGenerationType === 'image' ? (
+															<div className="w-72 overflow-hidden rounded-xl border border-red-100 bg-gradient-to-br from-red-50 via-white to-orange-50 p-3 shadow-sm" aria-label="AI 正在绘制图片">
+																<div className="relative mb-3 flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-white/70">
+																	<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-red-100/70 to-transparent" />
+																	<div className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-red-500 text-white shadow-sm">
+																		<ImageIcon className="h-5 w-5 animate-pulse" />
+																	</div>
+																</div>
+																<div className="px-1 pb-1">
+																	<div className="flex items-center gap-2 text-xs font-medium text-red-600">
+																		<Loader2 className="h-3.5 w-3.5 animate-spin" />
+																		<span>{thinkingStage || 'AI 正在绘制图片'}</span>
+																	</div>
+																	<div className="mt-1 text-[10px] text-muted-foreground">正在构图、处理光影与画面细节…</div>
+																</div>
+															</div>
 														) : (
-															msg.role === 'assistant' ? <div><MarkdownContent content={msg.content} />{sending && msg.id.startsWith('ai-') && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-red-500 align-middle" aria-hidden="true" />}</div> : msg.content
+															<div className="flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-label={thinkingStage || "AI 正在思考"}>
+																<span className="flex items-center gap-1">
+																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '0ms' }} />
+																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '150ms' }} />
+																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '300ms' }} />
+																</span>
+																<span>{thinkingStage || (activeGenerationType === 'video' ? 'AI 正在生成视频' : 'AI 正在思考')}</span>
+															</div>
 														)
-													})()}
+													) : msg.role === 'assistant' ? (
+														<div>
+															<MarkdownContent
+																content={msg.content}
+																onImportImage={(url) => void importImageToMaterials(msg.id, url)}
+																onInsertImage={insertGeneratedImage}
+																importingUrls={importingImageUrls}
+																importedUrls={importedImageUrls}
+															/>
+															{sending && msg.id.startsWith('ai-') && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-red-500 align-middle" aria-hidden="true" />}
+														</div>
+													) : msg.content}
+													{msg.role === 'assistant' && msg.content && msg.content !== '生成失败，请稍后重试。' && !sending && (
+														<div className="mt-3 border-t pt-2">
+															<button
+																type="button"
+																onClick={() => importAssistantMessage(msg.content)}
+																className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-600"
+															>
+																<FileText className="h-3.5 w-3.5" />
+																导入内容写作台
+															</button>
+														</div>
+													)}
 												</div>
 												{msg.role === 'user' && (
 													<div className="relative mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-red-400 to-red-600 text-xs font-bold text-white">
@@ -869,8 +1207,26 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								</div>
 
 								{/* 底部输入 */}
-								<div className="border-t bg-background px-2 py-1 ">
+								<div className="border-t bg-background px-2 py-2">
 									<div className="max-w-4xl mx-auto">
+										<div className="scrollBar-hidden mb-2 flex gap-2 overflow-x-auto px-1">
+											{promptCategories.map((category) => {
+												const Icon = category.icon
+												const count = prompts.filter((prompt) => promptBelongsToCategory(prompt, category.id) && prompt.is_active !== false).length
+												return (
+													<button
+														key={category.id}
+														type="button"
+														onClick={() => setSelectedPromptCategory(category.id)}
+														className="focus-red inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border bg-white px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+													>
+														<Icon className="h-3.5 w-3.5" />
+														{category.title}
+														<span className="text-[10px] opacity-60">{count}</span>
+													</button>
+												)
+											})}
+										</div>
 										<div className="relative min-h-16 rounded-lg border bg-background px-4 py-3 pr-20 shadow-[0_5px_18px_rgba(30,36,55,.05)] transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5">
 											<textarea
 												ref={inputRef}
@@ -984,7 +1340,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 											</div>
 											<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-2">
 												{promptCategories.map((category) => {
-													const count = prompts.filter((prompt) => prompt.category === category.id && prompt.is_active !== false).length
+													const count = prompts.filter((prompt) => promptBelongsToCategory(prompt, category.id) && prompt.is_active !== false).length
 													const Icon = category.icon
 													return (
 														<button
@@ -1029,6 +1385,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					</div>
 				</DialogContent>
 			</Dialog>
+			{clearEditorDialog}
 			<Dialog open={!!selectedPromptCategory} onOpenChange={(open) => !open && setSelectedPromptCategory(null)}>
 				<DialogContent className="sm:max-w-xl">
 					<DialogHeader>
@@ -1036,7 +1393,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						<DialogDescription>选择后会填入下方 AI 输入框，你可以继续修改其中的变量与创作要求。</DialogDescription>
 					</DialogHeader>
 					<div className="scrollBar-hidden grid max-h-[52vh] gap-2 overflow-y-auto pr-1">
-						{prompts.filter((prompt) => prompt.category === selectedPromptCategory && prompt.is_active !== false).map((prompt) => {
+						{prompts.filter((prompt) => promptBelongsToCategory(prompt, selectedPromptCategory) && prompt.is_active !== false).map((prompt) => {
 							const Icon = iconMap[prompt.icon] || FileText
 							return (
 								<button

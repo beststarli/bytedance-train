@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import path from 'path'
+import { randomUUID } from 'crypto'
 import { pool } from '../utils/db'
 import { verifyToken } from '../utils/jwt'
 import { chatCompletion, chatCompletionStream, generateImage, generateVideo, detectModelType, chatSummary } from '../utils/ai'
@@ -8,6 +9,10 @@ import { truncateToTokenLimit, buildMessages, countTokens, DEFAULT_TEXT_CONFIG }
 import { deleteUpload, getUpload, objectStorageErrorMessage, saveUpload } from '../utils/objectStorage'
 
 const router: Router = Router()
+
+function imageMarkdown(urls: string[]) {
+	return urls.map((url, index) => `![AI 生成图片${urls.length > 1 ? ` ${index + 1}` : ''}](${url})`).join('\n\n')
+}
 
 // 认证中间件
 function auth(req: Request, res: Response) {
@@ -165,7 +170,7 @@ router.post('/chats/:id/generate', async (req: Request, res: Response) => {
 	switch (modelType) {
 		case 'image': {
 			const urls = await generateImage(content)
-			aiContent = urls[0] || '图片生成失败'
+			aiContent = imageMarkdown(urls) || '图片生成失败'
 			break
 		}
 		case 'video': {
@@ -256,13 +261,45 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 			: detectModelType(content)
 
 		let fullContent = ''
-		res.write(`data: ${JSON.stringify({ type: 'status', message: modelType === 'text' ? '正在组织文章结构' : '正在准备生成任务' })}\n\n`)
+		res.write(`data: ${JSON.stringify({
+			type: 'status',
+			model_type: modelType,
+			message: modelType === 'image' ? 'AI 正在绘制图片' : modelType === 'video' ? 'AI 正在生成视频' : 'AI 正在思考',
+		})}\n\n`)
 
 		switch (modelType) {
 			case 'image': {
 				const urls = await generateImage(content)
-				fullContent = urls[0] || '图片生成失败'
-				res.write(`data: ${JSON.stringify({ type: 'chunk', content: fullContent })}\n\n`)
+				fullContent = imageMarkdown(urls) || '图片生成失败'
+				res.write(`data: ${JSON.stringify({ type: 'image', content: fullContent, urls })}\n\n`)
+				if (urls.length > 0) {
+					try {
+						const descriptionHeading = '\n\n### 图片描述\n'
+						fullContent += descriptionHeading
+						res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'text', message: 'AI 正在描述图片' })}\n\n`)
+						res.write(`data: ${JSON.stringify({ type: 'chunk', content: descriptionHeading })}\n\n`)
+
+						const descriptionStream = chatCompletionStream([
+							{
+								role: 'system',
+								content: '你是专业的视觉内容编辑。请根据用户的绘图需求，为刚生成的图片撰写一段自然、具体的中文描述。描述主体、动作、构图、色彩、光影和整体氛围，控制在80至150字，不要提及URL、模型、提示词或“根据需求推测”等内容，不要使用标题。',
+							},
+							{
+								role: 'user',
+								content: `刚生成图片时使用的创作要求如下：\n${content}`,
+							},
+						])
+						for await (const descriptionChunk of descriptionStream) {
+							fullContent += descriptionChunk
+							res.write(`data: ${JSON.stringify({ type: 'chunk', content: descriptionChunk })}\n\n`)
+						}
+					} catch (descriptionError) {
+						console.error('[Image] 生成图片描述失败：', descriptionError)
+						const fallbackDescription = '\n\n图片已根据你的创作要求生成，可直接插入正文或添加到素材库。'
+						fullContent += fallbackDescription
+						res.write(`data: ${JSON.stringify({ type: 'chunk', content: fallbackDescription })}\n\n`)
+					}
+				}
 				break
 			}
 			case 'video': {
@@ -290,7 +327,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 				console.log(`[Stream ${req.params.id}] ${finalMessages.length} messages, ~${totalTokens} tokens`)
 
 				const stream = chatCompletionStream(finalMessages)
-				res.write(`data: ${JSON.stringify({ type: 'status', message: '结构已准备，开始生成正文' })}\n\n`)
+				res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'text', message: 'AI 正在思考' })}\n\n`)
 
 				for await (const chunk of stream) {
 					fullContent += chunk
@@ -500,10 +537,69 @@ router.get('/materials', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { rows } = await pool.query(
-		'SELECT id, filename, url, type, size, created_at FROM materials WHERE user_id = $1 ORDER BY created_at DESC',
+		'SELECT id, filename, url, type, size, source_url, created_at FROM materials WHERE user_id = $1 ORDER BY created_at DESC',
 		[userId]
 	)
 	res.json({ materials: rows })
+})
+
+router.post('/messages/:id/import-image', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+
+	const requestedUrl = String(req.body?.url || '').trim()
+	const { rows } = await pool.query(
+		`SELECT m.content
+		 FROM messages m JOIN chats c ON c.id = m.chat_id
+		 WHERE m.id = $1 AND m.role = 'assistant' AND c.user_id = $2`,
+		[req.params.id, userId],
+	)
+	const messageContent = String(rows[0]?.content || '')
+	const imageUrls = [
+		...Array.from(messageContent.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g), (match) => match[1]),
+		...messageContent.split('\n').map((line) => line.trim()).filter((line) =>
+			/^https?:\/\/\S+\.(png|jpe?g|gif|webp)(\?\S*)?$/i.test(line),
+		),
+	]
+	if (!rows[0] || !requestedUrl || !imageUrls.includes(requestedUrl)) {
+		res.status(400).json({ error: '图片不属于当前用户的 AI 对话' })
+		return
+	}
+
+	try {
+		const parsedUrl = new URL(requestedUrl)
+		if (parsedUrl.protocol !== 'https:') throw new Error('只允许导入 HTTPS 图片')
+
+		const existing = await pool.query(
+			'SELECT id, filename, url, type, size, source_url, created_at FROM materials WHERE user_id = $1 AND source_url = $2 LIMIT 1',
+			[userId, requestedUrl],
+		)
+		if (existing.rows[0]) {
+			res.json({ material: existing.rows[0], already_exists: true })
+			return
+		}
+
+		const response = await fetch(requestedUrl)
+		if (!response.ok) throw new Error(`下载生成图片失败：${response.status}`)
+		const contentType = response.headers.get('content-type')?.split(';')[0] || ''
+		if (!contentType.startsWith('image/')) throw new Error('远程资源不是图片')
+		const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/webp' ? 'webp' : 'png'
+		const filename = `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${extension}`
+		const buffer = Buffer.from(await response.arrayBuffer())
+		const url = await saveUpload(`materials/${filename}`, buffer, contentType)
+		const inserted = await pool.query(
+			`INSERT INTO materials (user_id, filename, url, type, size, source_url)
+			 VALUES ($1, $2, $3, 'image', $4, $5)
+			 ON CONFLICT (user_id, source_url) WHERE source_url IS NOT NULL
+			 DO UPDATE SET source_url = EXCLUDED.source_url
+			 RETURNING id, filename, url, type, size, source_url, created_at`,
+			[userId, filename, url, buffer.length, requestedUrl],
+		)
+		res.json({ material: inserted.rows[0], already_exists: false })
+	} catch (error) {
+		console.error('[Image] 添加 AI 图片到素材库失败：', error)
+		res.status(400).json({ error: error instanceof Error ? error.message : '添加素材失败' })
+	}
 })
 
 router.post('/materials', async (req: Request, res: Response) => {

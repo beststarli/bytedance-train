@@ -12,6 +12,7 @@ import {
     ChevronLeft,
     ChevronRight,
     RefreshCw,
+    PencilLineIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -25,10 +26,10 @@ interface SidebarProps {
 
 const menuItems = [
     { id: "dashboard", label: "首页", icon: Home },
-    { id: "create", label: "创作中心", icon: Sparkles },
+    { id: "create", label: "创作中心", icon: PencilLineIcon },
     { id: "works", label: "作品管理", icon: FileText },
     { id: "materials", label: "素材库", icon: FolderOpen },
-    { id: "prompts", label: "提示词模版", icon: PlusSquare },
+    { id: "prompts", label: "提示词模版", icon: Sparkles },
     { id: "review", label: "内容审核", icon: Shield },
     { id: "inspiration", label: "创作灵感", icon: Compass },
     { id: "userPage", label: "个人中心", icon: UserRound },

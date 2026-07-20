@@ -97,5 +97,8 @@
       url           TEXT NOT NULL,
       type          VARCHAR(20) NOT NULL DEFAULT 'image',
       size          INTEGER,
+      source_url    TEXT,
       created_at    TIMESTAMPTZ DEFAULT NOW()
   );
+  CREATE UNIQUE INDEX idx_materials_user_source_unique
+    ON materials (user_id, source_url) WHERE source_url IS NOT NULL;

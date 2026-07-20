@@ -278,7 +278,16 @@ export default function Header({
                         <div>
                             字节跳动 2026 前端工程训练营今日头条部门项目
                         </div>
-
+                        <div>
+                            项目仓库：<a href='https://github.com/beststarli/bytedance-train' target="_blank" rel="noopener noreferrer" className="cursor-pointer font-bold text-red-500 underline-offset-4 hover:underline">
+                                https://github.com/beststarli/bytedance-train
+                            </a>
+                        </div>
+                        <a href='https://www.beststarli.cn/' target='_blank' rel='noopener noreferrer'>
+                            <div className='w-12 h-12 rounded-full border-2 border-gray-300 mt-2 overflow-hidden transition-shadow duration-300 hover:shadow-[0_0_12px_3px_rgba(248,216,16,0.6)]'>
+                                <img src='/beststar-128.webp' alt='BestStar' title='欢迎访问我的博客' className='w-full h-full object-cover' />
+                            </div>
+                        </a>
                     </div>
                 </DialogContent>
             </Dialog>
