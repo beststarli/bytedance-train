@@ -55,6 +55,9 @@ async function runMigrations() {
 				size INTEGER,
 				created_at TIMESTAMPTZ DEFAULT NOW()
 			);
+			ALTER TABLE materials ADD COLUMN IF NOT EXISTS source_url TEXT;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_materials_user_source_unique
+				ON materials (user_id, source_url) WHERE source_url IS NOT NULL;
 			CREATE INDEX IF NOT EXISTS idx_materials_user_id ON materials(user_id);
 			ALTER TABLE works ADD COLUMN IF NOT EXISTS quality_score DECIMAL(3,1);
 			ALTER TABLE works ADD COLUMN IF NOT EXISTS view_count INTEGER DEFAULT 0;
