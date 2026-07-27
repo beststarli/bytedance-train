@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useEffect, useRef } from 'react'
-import { ImageIcon, VideoIcon, Upload, Trash2, FileType } from 'lucide-react'
+import { VideoIcon, Upload, Trash2 } from 'lucide-react'
 import { api } from '@/api/api'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -14,8 +14,6 @@ interface Material {
   size: number
   created_at: string
 }
-
-const typeIcons: Record<string, React.ElementType> = { image: ImageIcon, video: VideoIcon }
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + 'B'
@@ -83,7 +81,7 @@ export default function MaterialsPage() {
   }
 
   return (
-    <div className="enter-workspace flex-1 overflow-y-auto px-16 py-8">
+    <div className="enter-workspace flex-1 overflow-y-auto px-16 pt-8">
       <div className="mx-auto">
         <div className="flex items-end justify-between mb-7">
           <div>
@@ -106,7 +104,6 @@ export default function MaterialsPage() {
         ) : (
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {materials.map((m) => {
-              const Icon = typeIcons[m.type] || FileType
               return (
                 <div key={m.id} className="workspace-card group overflow-hidden hover:border-red-200 transition-all hover:-translate-y-0.5">
                   <div className="aspect-video bg-muted flex items-center justify-center relative overflow-hidden">
@@ -154,7 +151,7 @@ export default function MaterialsPage() {
             </DialogDescription>
           </DialogHeader>
           {deleteError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{deleteError}</div>}
-          <DialogFooter className='bg-white pt-0'>
+          <DialogFooter className='bg-background pt-0'>
             <Button variant="outline" onClick={() => setPendingDelete(null)} disabled={deleting}>取消</Button>
             <Button variant="destructive" onClick={() => void handleDelete()} disabled={deleting}>
               {deleting ? '删除中…' : '确认删除'}

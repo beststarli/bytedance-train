@@ -35,7 +35,7 @@ export default function Home() {
 			case "dashboard":
 				return <MainPage key={homeRefreshKey} onNavigate={setActiveMenu} />
 			case "inspiration":
-				return <MainPage onNavigate={setActiveMenu} mode={menu} />
+				return <MainPage onNavigate={setActiveMenu} mode="inspiration" />
 			case "works":
 				return <WorksPage onNavigate={setActiveMenu} />
 			case "prompts":

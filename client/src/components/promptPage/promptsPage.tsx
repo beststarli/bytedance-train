@@ -113,9 +113,9 @@ export default function PromptsPage() {
 	}, [categories])
 
 	return (
-		<div className="enter-workspace flex-1 overflow-y-auto px-16 py-8 ">
-			<div className="mx-auto">
-				<div className="flex items-end justify-between mb-7">
+		<div className="enter-workspace min-h-0 flex-1 overflow-hidden px-16 py-8">
+			<div className="mx-auto flex h-full min-h-0 flex-col">
+				<div className="mb-7 flex shrink-0 items-end justify-between">
 					<div>
 						<div className="workspace-label mb-2">Prompt Template</div>
 						<h1 className="text-2xl font-bold">提示词模版</h1>
@@ -204,8 +204,8 @@ export default function PromptsPage() {
 				) : prompts.length === 0 ? (
 					<div className="text-center py-12 text-muted-foreground">暂无提示词模版</div>
 				) : (
-					<Tabs value={activeTab} onValueChange={setActiveTab} className="workspace-card overflow-hidden">
-						<TabsList variant="line" className="w-full h-14 bg-muted/30 border-b rounded-none p-0 px-3 mb-0">
+					<Tabs value={activeTab} onValueChange={setActiveTab} className="workspace-card flex min-h-0 flex-1 flex-col overflow-hidden">
+						<TabsList variant="line" className="mb-0 h-14 w-full shrink-0 rounded-none border-b bg-muted/30 p-0 px-3">
 							{categories.map((cat) => {
 								const meta = CATEGORY_MAP[cat] || { label: cat, icon: <Sparkles className="w-4 h-4" /> }
 								const count = prompts.filter((p) => p.category === cat).length
@@ -225,7 +225,7 @@ export default function PromptsPage() {
 						{categories.map((cat) => {
 							const filtered = prompts.filter((p) => p.category === cat)
 							return (
-								<TabsContent key={cat} value={cat} className="mt-0 p-5">
+								<TabsContent key={cat} value={cat} className="mt-0 min-h-0 flex-1 overflow-y-auto p-5">
 									{filtered.length === 0 ? (
 										<div className="text-center py-12 text-muted-foreground text-sm">该分类暂无提示词模版</div>
 									) : (

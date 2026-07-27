@@ -12,7 +12,10 @@ export default function RootLayout({
     children: React.ReactNode;
 }>) {
     return (
-        <html lang="zh-CN" className="h-full antialiased">
+        <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning>
+            <head>
+                <script dangerouslySetInnerHTML={{ __html: `(function(){try{var t=localStorage.getItem('creator-color-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}catch(e){}})()` }} />
+            </head>
             <body className="min-h-full flex flex-col">{children}</body>
         </html>
     );

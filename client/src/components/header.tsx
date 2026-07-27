@@ -28,7 +28,8 @@ import {
 import { useAuthStore } from '@/store/userStore'
 import { api, logoutSession } from '@/api/api'
 import { resolveAssetUrl } from '@/lib/asset-url'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import ThemeToggle from '@/components/theme-toggle'
 
 interface SearchItem {
     id: string
@@ -154,7 +155,7 @@ export default function Header({
     }
 
     return (
-        <header className="sticky top-0 z-30 flex h-[72px] shrink-0 items-center justify-between gap-3 border-b bg-white px-3 sm:px-4 md:px-7">
+        <header className="sticky top-0 z-30 flex h-[72px] shrink-0 items-center justify-between gap-3 border-b bg-card px-3 sm:px-4 md:px-7">
             {/* 左侧搜索 */}
             <div className="min-w-0 flex-1 sm:flex-none">
                 <div className="relative w-full border rounded-lg sm:w-[300px] xl:w-[360px]">
@@ -171,7 +172,7 @@ export default function Header({
                         <Command className="w-3 h-3" /> K
                     </div>
                     {searchFocused && query.trim().length >= 2 && (
-                        <div className="absolute left-0 right-0 top-12 z-50 max-h-80 overflow-y-auto rounded-lg border bg-white py-1 shadow-lg">
+                        <div className="absolute left-0 right-0 top-12 z-50 max-h-80 overflow-y-auto rounded-lg border bg-popover py-1 text-popover-foreground shadow-lg">
                             {searching ? (
                                 <div className="px-4 py-8 text-center text-xs text-muted-foreground">正在搜索…</div>
                             ) : hasSearchResults ? (
@@ -220,6 +221,8 @@ export default function Header({
                         </div>
                     </DropdownMenuContent>
                 </DropdownMenu>
+
+                <ThemeToggle />
 
                 {isLoggedIn ? (
                     <DropdownMenu>

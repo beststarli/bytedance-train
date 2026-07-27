@@ -3,7 +3,7 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { pool } from '../utils/db'
 import { verifyToken } from '../utils/jwt'
-import { chatCompletion, chatCompletionStream, generateImage, generateVideo, detectModelType, chatSummary } from '../utils/ai'
+import { chatCompletionStream, generateImage, generateVideo, detectModelType, chatSummary } from '../utils/ai'
 import type { ModelType } from '../utils/ai'
 import { truncateToTokenLimit, buildMessages, countTokens, DEFAULT_TEXT_CONFIG } from '../utils/context'
 import { deleteUpload, getUpload, objectStorageErrorMessage, saveUpload } from '../utils/objectStorage'
@@ -12,6 +12,10 @@ const router: Router = Router()
 
 function imageMarkdown(urls: string[]) {
 	return urls.map((url, index) => `![AI 生成图片${urls.length > 1 ? ` ${index + 1}` : ''}](${url})`).join('\n\n')
+}
+
+function videoMarkdown(url: string) {
+	return `[AI 生成视频](${url})`
 }
 
 // 认证中间件
@@ -135,86 +139,6 @@ router.post('/chats/:id/messages', async (req: Request, res: Response) => {
 	res.json({ message: msgRows[0] })
 })
 
-// ==================== AI 生成（JSON 响应，向后兼容） ====================
-
-router.post('/chats/:id/generate', async (req: Request, res: Response) => {
-	const userId = auth(req, res)
-	if (!userId) return
-
-	const { content, model_type } = req.body
-	if (!content?.trim()) {
-		res.status(400).json({ error: '消息不能为空' })
-		return
-	}
-
-	const { rows: chatRows } = await pool.query(
-		'SELECT id, title FROM chats WHERE id = $1 AND user_id = $2',
-		[req.params.id, userId]
-	)
-	if (!chatRows[0]) {
-		res.status(404).json({ error: '聊天不存在' })
-		return
-	}
-
-	const { rows: userMsg } = await pool.query(
-		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
-		[req.params.id, 'user', content]
-	)
-
-	const modelType: ModelType = model_type && ['text', 'image', 'video'].includes(model_type)
-		? model_type
-		: detectModelType(content)
-
-	let aiContent: string
-
-	switch (modelType) {
-		case 'image': {
-			const urls = await generateImage(content)
-			aiContent = imageMarkdown(urls) || '图片生成失败'
-			break
-		}
-		case 'video': {
-			const { task_id } = await generateVideo(content)
-			aiContent = `视频生成任务已提交，任务 ID: ${task_id}`
-			break
-		}
-		default: {
-			const { rows: history } = await pool.query(
-				`SELECT role, content FROM messages
-				 WHERE chat_id = $1 AND id != $2
-				 ORDER BY created_at ASC`,
-				[req.params.id, userMsg[0].id]
-			)
-			const messages = history.map((m: any) => ({
-				role: m.role as 'user' | 'assistant',
-				content: m.content,
-			}))
-			const finalMessages = buildMessages(messages, { role: 'user', content })
-			const totalTokens = finalMessages.reduce((sum, m) => sum + countTokens(m.content), 0)
-			console.log(`[Chat ${req.params.id}] ${finalMessages.length} messages, ~${totalTokens} tokens`)
-			aiContent = await chatCompletion(finalMessages)
-			const { truncatedCount } = truncateToTokenLimit(messages, DEFAULT_TEXT_CONFIG)
-			if (truncatedCount > 0) {
-				console.log(`[Chat ${req.params.id}] Truncated ${truncatedCount} old messages`)
-			}
-		}
-	}
-
-	const { rows: aiMsg } = await pool.query(
-		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
-		[req.params.id, 'assistant', aiContent]
-	)
-
-	if (chatRows[0].title === '新对话') {
-		const shortTitle = content.length > 30 ? content.slice(0, 30) + '…' : content
-		await pool.query('UPDATE chats SET title = $1, updated_at = NOW() WHERE id = $2', [shortTitle, req.params.id])
-	} else {
-		await pool.query('UPDATE chats SET updated_at = NOW() WHERE id = $1', [req.params.id])
-	}
-
-	res.json({ user_message: userMsg[0], ai_message: aiMsg[0], model_type: modelType })
-})
-
 // ==================== AI 生成（SSE 流式，文生文/图/视频通用） ====================
 
 router.post('/chats/:id/generate-stream', async (req: Request, res: Response) => {
@@ -303,9 +227,12 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 				break
 			}
 			case 'video': {
-				const { task_id } = await generateVideo(content)
-				fullContent = `视频生成任务已提交，任务 ID: ${task_id}`
-				res.write(`data: ${JSON.stringify({ type: 'chunk', content: fullContent })}\n\n`)
+				const { task_id, video_url } = await generateVideo(content, (status) => {
+					const message = status === 'queued' ? '视频任务正在排队' : status === 'running' ? 'AI 正在生成视频' : '正在处理视频结果'
+					res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'video', message, task_id })}\n\n`)
+				})
+				fullContent = videoMarkdown(video_url)
+				res.write(`data: ${JSON.stringify({ type: 'video', content: fullContent, url: video_url, task_id })}\n\n`)
 				break
 			}
 			default: {

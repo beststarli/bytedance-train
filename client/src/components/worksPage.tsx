@@ -113,18 +113,18 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
   }
 
   return (
-    <div className="enter-workspace h-[calc(100dvh-72px)] flex-1 overflow-hidden px-16 py-8">
+    <div className="enter-workspace h-[calc(100dvh-72px)] flex-1 overflow-hidden px-16 pt-8">
       <div className="mx-auto flex h-full flex-col">
         <div className="mb-5 flex shrink-0 flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div><div className="workspace-label mb-2">Content library</div><h1 className="text-2xl font-bold">作品管理</h1><p className="mt-1.5 text-sm text-muted-foreground">统一管理草稿和已发布内容，共 {works.length} 篇</p></div>
           <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:flex-nowrap">
             <div className="relative min-w-[240px] flex-1 xl:w-80 xl:flex-none">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="搜索作品标题或正文" value={search} onChange={(event) => setSearch(event.target.value)} className="h-10 border-transparent bg-white pl-9 shadow-sm" />
+              <Input placeholder="搜索作品标题或正文" value={search} onChange={(event) => setSearch(event.target.value)} className="h-10 border-transparent bg-card pl-9 shadow-sm" />
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="h-10 min-w-28 shrink-0 justify-between bg-white text-xs">
+                <Button variant="outline" className="h-10 min-w-28 shrink-0 justify-between bg-card text-xs">
                   {status === "all" ? "全部状态" : status === "published" ? "已发布" : "草稿"}
                   <ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
                 </Button>
