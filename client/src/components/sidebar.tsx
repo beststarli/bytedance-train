@@ -5,7 +5,6 @@ import {
     Sparkles,
     FolderOpen,
     Shield,
-    PlusSquare,
     Compass,
     UserRound,
     WandSparkles,
@@ -41,7 +40,7 @@ export default function Sidebar({ activeMenu, onMenuChange, collapsed, onCollaps
     return (
         <>
             <aside className={cn(
-                "fixed left-0 top-0 z-40 hidden h-screen flex-col border-r bg-white transition-[width] duration-200 lg:flex",
+                "fixed left-0 top-0 z-40 hidden h-screen flex-col border-r bg-sidebar text-sidebar-foreground transition-[width] duration-200 lg:flex",
                 collapsed ? "w-14" : "w-60",
             )}>
                 {/* Logo */}
@@ -104,7 +103,7 @@ export default function Sidebar({ activeMenu, onMenuChange, collapsed, onCollaps
                                                 event.stopPropagation()
                                                 onHomeRefresh()
                                             }}
-                                            className="cursor-pointer focus-red absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity duration-200 group-hover:opacity-100 hover:bg-white hover:text-red-500"
+                                            className="cursor-pointer focus-red absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity duration-200 group-hover:opacity-100 hover:bg-background hover:text-red-500"
                                         >
                                             <RefreshCw className="h-3.5 w-3.5" />
                                         </button>
@@ -133,7 +132,7 @@ export default function Sidebar({ activeMenu, onMenuChange, collapsed, onCollaps
                     type="button"
                     onClick={() => onCollapsedChange(!collapsed)}
                     aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
-                    className="focus-red absolute -right-3 top-1/2 flex h-12 w-6 -translate-y-1/2 items-center justify-center rounded-lg border bg-white text-muted-foreground shadow-sm hover:text-foreground"
+                    className="focus-red absolute -right-3 top-1/2 flex h-12 w-6 -translate-y-1/2 items-center justify-center rounded-lg border bg-card text-muted-foreground shadow-sm hover:text-foreground"
                 >
                     {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
                 </button>

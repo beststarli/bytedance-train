@@ -118,6 +118,40 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 	const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 })
 	const fileInputRef = useRef<HTMLInputElement>(null)
 	const cropDragRef = useRef<{ pointerId: number; startX: number; startY: number; offsetX: number; offsetY: number } | null>(null)
+	const inspirationAsideRef = useRef<HTMLElement>(null)
+
+	useEffect(() => {
+		const aside = inspirationAsideRef.current
+		const scrollContainer = aside?.closest<HTMLElement>(".enter-workspace")
+		if (!aside || !scrollContainer || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
+
+		let previousScrollTop = scrollContainer.scrollTop
+		let offset = 0
+		let animationFrame = 0
+
+		const settle = () => {
+			offset *= 0.82
+			if (Math.abs(offset) < 0.1) offset = 0
+			aside.style.transform = offset ? `translate3d(0, ${offset}px, 0)` : ""
+			animationFrame = offset ? window.requestAnimationFrame(settle) : 0
+		}
+
+		const handleScroll = () => {
+			const nextScrollTop = scrollContainer.scrollTop
+			const delta = nextScrollTop - previousScrollTop
+			previousScrollTop = nextScrollTop
+			offset = Math.max(-16, Math.min(16, offset - delta * 0.28))
+			aside.style.transform = `translate3d(0, ${offset}px, 0)`
+			if (!animationFrame) animationFrame = window.requestAnimationFrame(settle)
+		}
+
+		scrollContainer.addEventListener("scroll", handleScroll, { passive: true })
+		return () => {
+			scrollContainer.removeEventListener("scroll", handleScroll)
+			if (animationFrame) window.cancelAnimationFrame(animationFrame)
+			aside.style.transform = ""
+		}
+	}, [])
 
 	useEffect(() => {
 		api<DashboardData>("/api/content/creator-dashboard")
@@ -242,7 +276,7 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 			<div className="mx-auto space-y-5">
 				<div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
 					<div className="space-y-5">
-						<section className="workspace-card relative overflow-hidden rounded-md bg-white p-6 shadow-sm sm:p-8">
+						<section className="workspace-card relative overflow-hidden rounded-md bg-card p-6 shadow-sm sm:p-8">
 							<div className="flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-center">
 								<div className="flex items-center gap-5">
 									<button type="button" onClick={() => setAvatarOpen(true)} className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-red-400 to-red-600 text-2xl font-bold text-white">
@@ -260,7 +294,7 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 							</div>
 						</section>
 
-						<section className="workspace-card rounded-md bg-white p-5 shadow-sm sm:p-6">
+						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
 							<div className="mb-5"><h2 className="font-bold">新的创作</h2><p className="mt-1 text-xs text-muted-foreground">选择下一步，直接进入对应工作流</p></div>
 							<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 								{[
@@ -277,8 +311,8 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 							</div>
 						</section>
 
-						<section className="workspace-card rounded-md bg-white p-5 shadow-sm sm:p-6">
-							<div className="mb-5 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-red-500" /><div><h2 className="font-bold">作品数据看板</h2><p className="mt-1 text-xs text-muted-foreground">最新发布文章的阅读与互动趋势</p></div></div><div className="flex rounded-md bg-muted p-0.5 text-xs"><button type="button" onClick={() => setChartRange(7)} className={`rounded px-2.5 py-1 ${chartRange === 7 ? "bg-white text-red-500 shadow-sm" : "text-muted-foreground"}`}>近7天</button><button type="button" onClick={() => setChartRange(30)} className={`rounded px-2.5 py-1 ${chartRange === 30 ? "bg-white text-red-500 shadow-sm" : "text-muted-foreground"}`}>近30天</button></div></div>
+						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
+							<div className="mb-5 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-red-500" /><div><h2 className="font-bold">作品数据看板</h2><p className="mt-1 text-xs text-muted-foreground">最新发布文章的阅读与互动趋势</p></div></div><div className="flex rounded-md bg-muted p-0.5 text-xs"><button type="button" onClick={() => setChartRange(7)} className={`rounded px-2.5 py-1 ${chartRange === 7 ? "bg-card text-red-500 shadow-sm" : "text-muted-foreground"}`}>近7天</button><button type="button" onClick={() => setChartRange(30)} className={`rounded px-2.5 py-1 ${chartRange === 30 ? "bg-card text-red-500 shadow-sm" : "text-muted-foreground"}`}>近30天</button></div></div>
 							<div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
 								<div className="relative min-h-72 overflow-hidden rounded-md border bg-muted">
 									{latestWork && articleCover(latestWork.content) ? <img src={articleCover(latestWork.content)} alt="" className="absolute inset-0 h-full w-full object-cover" /> : <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">最新作品暂无配图</div>}
@@ -298,13 +332,13 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 							</div>
 						</section>
 
-						<section className="workspace-card rounded-md bg-white p-5 shadow-sm sm:p-6">
-							<div className="mb-5 flex items-center justify-between"><div><h2 className="font-bold">我的互动</h2><p className="mt-1 text-xs text-muted-foreground">收藏与点赞过的文章</p></div><button type="button" onClick={() => setInteractionType((type) => type === "like" ? "favorite" : "like")} className="flex items-center gap-2 rounded-full bg-muted px-1 py-1 text-xs"><span className={`rounded-full px-3 py-1 ${interactionType === "like" ? "bg-white text-red-500 shadow-sm" : "text-muted-foreground"}`}>点赞</span><span className={`rounded-full px-3 py-1 ${interactionType === "favorite" ? "bg-white text-amber-600 shadow-sm" : "text-muted-foreground"}`}>收藏</span></button></div>
+						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
+							<div className="mb-5 flex items-center justify-between"><div><h2 className="font-bold">我的互动</h2><p className="mt-1 text-xs text-muted-foreground">收藏与点赞过的文章</p></div><button type="button" onClick={() => setInteractionType((type) => type === "like" ? "favorite" : "like")} className="flex items-center gap-2 rounded-full bg-muted px-1 py-1 text-xs"><span className={`rounded-full px-3 py-1 ${interactionType === "like" ? "bg-card text-red-500 shadow-sm" : "text-muted-foreground"}`}>点赞</span><span className={`rounded-full px-3 py-1 ${interactionType === "favorite" ? "bg-card text-amber-600 shadow-sm" : "text-muted-foreground"}`}>收藏</span></button></div>
 							{dashboard?.reactions?.some((item) => item.type === interactionType) ? <div className="grid gap-2 md:grid-cols-4">{dashboard.reactions.filter((item) => item.type === interactionType).map((item) => <div key={`${item.id}-${item.type}`} className="flex overflow-hidden rounded-md border"><div className="h-full w-36 shrink-0 bg-muted">{articleCover(item.content) ? <img src={articleCover(item.content)} alt="" className="h-full w-full object-fill" /> : <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">无配图</div>}</div><div className="min-w-0 p-3"><div className="flex items-center gap-1 text-[10px] text-muted-foreground">{item.type === "like" ? <Heart className="h-3 w-3 fill-red-500 text-red-500" /> : <Bookmark className="h-3 w-3 fill-amber-400 text-amber-500" />}{item.type === "like" ? "已点赞" : "已收藏"}</div><h3 className="mt-2 line-clamp-2 text-sm font-semibold">{item.title}</h3><p className="mt-1 text-[10px] text-muted-foreground">阅读 {item.view_count || 0}</p></div></div>)}</div> : <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">还没有{interactionType === "like" ? "点赞" : "收藏"}文章</div>}
 						</section>
 					</div>
 
-					<aside className="workspace-card rounded-md bg-white p-5 shadow-sm xl:sticky">
+					<aside ref={inspirationAsideRef} className="workspace-card rounded-md bg-card p-5 shadow-sm xl:sticky xl:top-8 xl:self-start xl:will-change-transform">
 						<div className="mb-3 flex items-center justify-between">
 							<div className="flex items-center gap-2">
 								<span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-600"><Lightbulb className="h-4 w-4" /></span>
@@ -312,7 +346,18 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 							</div>
 							<button type="button" onClick={() => onNavigate?.("inspiration")} className="text-[11px] text-muted-foreground hover:text-red-500">全部</button>
 						</div>
-						{["普通人如何用 AI 建立第二大脑", "年轻人重新爱上逛公园", "一人公司需要哪些 Agent", "内容创作者的效率系统", "低成本拍出电影感画面"].map((topic, index) => (
+						{[
+							"普通人如何用 AI 建立第二大脑",
+							"年轻人重新爱上逛公园",
+							"一人公司需要哪些 Agent",
+							"内容创作者的效率系统",
+							"低成本拍出电影感画面",
+							"如何把日常观察变成选题",
+							"小团队的内容增长方法",
+							"AI 时代值得培养的表达力",
+							"城市生活里的微小治愈",
+							"从零开始搭建个人知识库",
+						].map((topic, index) => (
 							<button key={topic} type="button" onClick={() => onNavigate?.("create:ai")} className="focus-red group flex w-full gap-2.5 rounded-lg px-1 py-2 text-left hover:bg-muted/60">
 								<span className="w-5 text-xs font-bold text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
 								<span className="flex-1 text-xs leading-5 group-hover:text-red-600">{topic}</span>

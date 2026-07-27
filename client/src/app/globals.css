@@ -84,32 +84,32 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --background: oklch(0.16 0.012 258);
+  --foreground: oklch(0.94 0.008 255);
+  --card: oklch(0.205 0.014 258);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.22 0.015 258);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --primary: oklch(0.65 0.235 22);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.27 0.014 258);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --muted: oklch(0.255 0.014 258);
+  --muted-foreground: oklch(0.7 0.018 255);
+  --accent: oklch(0.27 0.025 22);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --border: oklch(0.9 0.01 255 / 13%);
+  --input: oklch(0.9 0.01 255 / 18%);
+  --ring: oklch(0.65 0.2 22);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
+  --sidebar: oklch(0.185 0.013 258);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary: oklch(0.65 0.235 22);
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
@@ -124,26 +124,26 @@
     scrollbar-color: color-mix(in oklab, var(--muted-foreground) 38%, transparent) transparent;
   }
   *::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-    background: transparent;
+    width: 6px;
+    height: 6px;
+    background-color: transparent !important;
   }
   *::-webkit-scrollbar-track,
   *::-webkit-scrollbar-track-piece,
   *::-webkit-scrollbar-corner {
-    background: transparent;
+    border: 0;
+    background-color: transparent !important;
+    box-shadow: none !important;
   }
   *::-webkit-scrollbar-thumb {
     min-width: 32px;
     min-height: 32px;
-    border: 2px solid transparent;
+    border: 0;
     border-radius: 999px;
     background: color-mix(in oklab, var(--muted-foreground) 38%, transparent);
-    background-clip: padding-box;
   }
   *::-webkit-scrollbar-thumb:hover {
     background: color-mix(in oklab, var(--muted-foreground) 58%, transparent);
-    background-clip: padding-box;
   }
   *::-webkit-scrollbar-button {
     display: none;
@@ -164,13 +164,48 @@
     letter-spacing: -0.01em;
   }
   html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  html {
     @apply font-sans;
   }
 }
 
 @layer utilities {
+  /* 浅色状态底在深色主题中保留色相，但降低亮度与眩光。 */
+  .dark .bg-red-50 {
+    background-color: oklch(0.25 0.055 22);
+  }
+
+  .dark .bg-amber-50 {
+    background-color: oklch(0.25 0.04 75);
+  }
+
+  .dark .bg-blue-50 {
+    background-color: oklch(0.24 0.04 245);
+  }
+
+  .dark .bg-emerald-50 {
+    background-color: oklch(0.24 0.04 155);
+  }
+
   .workspace-card {
     @apply rounded-lg border border-border/80 bg-card shadow-[0_1px_2px_rgba(24,32,56,0.03),0_6px_20px_rgba(24,32,56,0.025)];
+  }
+
+  .dark .workspace-card {
+    box-shadow: 0 1px 2px rgb(0 0 0 / 18%), 0 10px 28px rgb(0 0 0 / 14%);
+  }
+
+  .dark .homepage-article-card {
+    background-color: oklch(0.225 0.008 255) !important;
+  }
+
+  .dark .homepage-article-card:hover {
+    background-color: oklch(0.265 0.01 255) !important;
   }
 
   .workspace-label {
@@ -184,6 +219,7 @@
   .scrollBar-hidden,
   .no-scrollbar {
     -ms-overflow-style: auto;
+    scrollbar-gutter: auto;
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklab, var(--muted-foreground) 38%, transparent) transparent;
   }
@@ -191,9 +227,24 @@
   .scrollBar-hidden::-webkit-scrollbar,
   .no-scrollbar::-webkit-scrollbar {
     display: block;
-    width: 8px;
-    height: 8px;
-    background: transparent;
+    width: 6px;
+    height: 6px;
+    background-color: transparent !important;
+  }
+
+  /* Chromium/Safari 支持时让滚动条覆盖在内容上，不额外占用一条轨道。 */
+  @supports (overflow: overlay) {
+    .overflow-auto {
+      overflow: overlay;
+    }
+
+    .overflow-y-auto {
+      overflow-y: overlay;
+    }
+
+    .overflow-x-auto {
+      overflow-x: overlay;
+    }
   }
 
   .article-rich-editor[data-empty="true"]::before {

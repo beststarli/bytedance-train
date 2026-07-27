@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
-	Plus,
 	MessageSquare,
 	Trash2,
 	Send,
@@ -11,8 +10,6 @@ import {
 	FileText,
 	ImageIcon,
 	Video,
-	ChevronLeft,
-	ChevronRight,
 	Pencil,
 	PenLine,
 	WandSparkles,
@@ -79,7 +76,7 @@ const promptCategoryMeta: Record<string, { title: string; description: string; i
 	writing: { title: '文章写作', description: '标题、结构与正文创作', icon: FileText },
 	article: { title: '文章创作', description: '标题、结构与正文创作', icon: FileText },
 	image: { title: '图片生成', description: '配图描述与视觉灵感', icon: ImageIcon },
-	video: { title: '视频创作', description: '分镜、口播与短视频脚本', icon: Video },
+	video: { title: '视频创作', description: '文本生成短视频画面', icon: Video },
 	optimize: { title: '内容优化', description: '润色、改写与观点整理', icon: Sparkles },
 	general: { title: '通用优化', description: '润色、改写与观点整理', icon: Sparkles },
 }
@@ -132,7 +129,7 @@ function GeneratedImageFigure({
 				<div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-gradient-to-br from-slate-100 via-white to-red-50">
 					<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/80 to-transparent" />
 					<div className="relative flex flex-col items-center gap-2 text-muted-foreground">
-						<span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white shadow-sm">
+						<span className="flex h-11 w-11 items-center justify-center rounded-xl bg-card shadow-sm">
 							<ImageIcon className="h-5 w-5 text-red-400" />
 						</span>
 						<span className="text-[11px]">正在加载生成图片…</span>
@@ -175,6 +172,16 @@ function GeneratedImageFigure({
 	)
 }
 
+function GeneratedVideoFigure({ videoUrl }: { videoUrl: string }) {
+	return (
+		<figure className="my-2 w-[min(640px,72vw)] max-w-full overflow-hidden rounded-xl border bg-black shadow-sm">
+			<video src={resolveAssetUrl(videoUrl)} controls preload="metadata" playsInline className="aspect-video w-full bg-black object-contain">
+				当前浏览器不支持视频播放。
+			</video>
+		</figure>
+	)
+}
+
 function MarkdownContent({
 	content,
 	onImportImage,
@@ -189,6 +196,8 @@ function MarkdownContent({
 	importedUrls?: Set<string>
 }) {
 	return <div className="space-y-2">{content.split('\n').map((line, index) => {
+		const video = line.trim().match(/^\[AI 生成视频\]\(([^)]+)\)$/)
+		if (video) return <GeneratedVideoFigure key={index} videoUrl={video[1]} />
 		const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 		const legacyImage = line.trim().match(/^(https?:\/\/\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?)$/i)
 		const imageUrl = image?.[2] || legacyImage?.[1]
@@ -380,7 +389,7 @@ function InlineArticleEditor({
 
 function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInsert: (material: Material) => void }) {
 	return (
-		<section className="shrink-0 bg-white px-4 py-3">
+		<section className="shrink-0 bg-card px-4 py-3">
 			<div className="mb-2 flex items-center justify-between">
 				<div className="flex items-center gap-2 text-xs font-semibold"><FolderOpen className="h-3.5 w-3.5 text-red-500" />素材库</div>
 				<span className="text-[10px] text-muted-foreground">拖拽图片到右侧正文，点击也可快速插入</span>
@@ -635,6 +644,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								)
 								break
 
+							case 'video':
+								accumulatedContent = data.content
+								displayedContent = data.content
+								setThinkingStage('')
+								setMessages((prev) =>
+									prev.map((message) =>
+										message.id === aiId ? { ...message, content: data.content } : message
+									)
+								)
+								break
+
 							case 'done':
 								finalMessage = data.message
 								break
@@ -674,13 +694,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			])
 			setChats(chatData.chats)
 			setMaterials(materialData.materials)
-		} catch {
-			revealCancelled = true
-			// 保留用户输入，并将 AI 占位改为可见的失败提示
-			setMessages((prev) =>
-				prev.map((m) =>
-					m.id === aiId
-						? { ...m, content: '生成失败，请稍后重试。' }
+			} catch (error) {
+				revealCancelled = true
+				// 保留用户输入，并将 AI 占位改为可见的失败提示
+				const failureMessage = error instanceof Error ? error.message : '生成失败，请稍后重试。'
+				setMessages((prev) =>
+					prev.map((m) =>
+						m.id === aiId
+							? { ...m, content: failureMessage }
 						: m
 				)
 			)
@@ -714,7 +735,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 			// 再流式发送
 			await sendStreamingMessage(chat.id, content)
-		} catch (err: any) {
+		} catch {
 			// 创建聊天失败不需要额外处理
 		}
 	}, [inputValue, sending, sendStreamingMessage])
@@ -991,7 +1012,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}
 
 	return (
-		<div className="enter-workspace relative flex h-full min-h-0 w-full flex-1 gap-3 overflow-hidden bg-[#f7f8fa] p-3">
+		<div className="enter-workspace relative flex h-full min-h-0 w-full flex-1 gap-3 overflow-hidden bg-muted/50 p-3">
 			<section className="workspace-card order-2 hidden w-[42%] min-w-[420px] flex-col overflow-hidden bg-background rounded-lg shadow-sm lg:flex">
 				<div className="shrink-0 border-b px-5 pt-3 pb-1">
 					<div className="flex items-center justify-between gap-3">
@@ -1036,14 +1057,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					{/* 侧边栏 */}
 					<aside
 						className={cn(
-							'hidden flex-col border-r bg-white transition-all duration-200 shrink-0 md:flex',
+							'hidden flex-col border-r bg-card transition-all duration-200 shrink-0 md:flex',
 							'w-56'
 						)}
 					>
 						<div className="px-4 pt-4.5 pb-1">
 							<Button
 								onClick={handleNewChat}
-								className="cursor-pointer w-full h-10 gap-2 rounded-lg bg-red-50/50 hover:bg-red-50 text-black border-2 border-red-500/75"
+								className="cursor-pointer h-10 w-full gap-2 rounded-lg border-2 border-red-500/75 bg-red-50/50 text-foreground hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/35"
 
 							>
 								<Pencil className="w-4 h-4" />
@@ -1135,7 +1156,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 												<div
 													className={cn(
 														'max-w-[75%] text-sm leading-6 whitespace-pre-wrap',
-														msg.role === 'assistant' && !msg.content && sending && activeGenerationType === 'image'
+								msg.role === 'assistant' && !msg.content && sending && (activeGenerationType === 'image' || activeGenerationType === 'video')
 															? 'border-0 bg-transparent p-0 shadow-none'
 															: msg.role === 'user'
 																? 'rounded-xl rounded-br-md border border-red-500 bg-red-500 px-4 py-3.5 text-white'
@@ -1145,7 +1166,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 													{msg.role === 'assistant' && !msg.content && sending ? (
 														activeGenerationType === 'image' ? (
 															<div className="w-72 overflow-hidden rounded-xl border border-red-100 bg-gradient-to-br from-red-50 via-white to-orange-50 p-3 shadow-sm" aria-label="AI 正在绘制图片">
-																<div className="relative mb-3 flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-white/70">
+														<div className="relative mb-3 flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-card/70">
 																	<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-red-100/70 to-transparent" />
 																	<div className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-red-500 text-white shadow-sm">
 																		<ImageIcon className="h-5 w-5 animate-pulse" />
@@ -1159,14 +1180,23 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 																	<div className="mt-1 text-[10px] text-muted-foreground">正在构图、处理光影与画面细节…</div>
 																</div>
 															</div>
-														) : (
+												) : activeGenerationType === 'video' ? (
+													<div className="w-[min(480px,72vw)] overflow-hidden rounded-xl border bg-card p-3 shadow-sm" aria-label="AI 正在生成视频">
+														<div className="relative mb-3 flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-muted/70">
+															<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-red-500/10 to-transparent" />
+															<span className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-red-500 text-white shadow-sm"><Video className="h-5 w-5" /></span>
+														</div>
+														<div className="flex items-center gap-2 text-xs font-medium text-red-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /><span>{thinkingStage || 'AI 正在生成视频'}</span></div>
+														<div className="mt-1 text-[10px] text-muted-foreground">正在生成画面与运动细节，通常需要几分钟…</div>
+													</div>
+												) : (
 															<div className="flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-label={thinkingStage || "AI 正在思考"}>
 																<span className="flex items-center gap-1">
 																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '0ms' }} />
 																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '150ms' }} />
 																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '300ms' }} />
 																</span>
-																<span>{thinkingStage || (activeGenerationType === 'video' ? 'AI 正在生成视频' : 'AI 正在思考')}</span>
+																	<span>{thinkingStage || 'AI 正在思考'}</span>
 															</div>
 														)
 													) : msg.role === 'assistant' ? (
@@ -1218,7 +1248,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 														key={category.id}
 														type="button"
 														onClick={() => setSelectedPromptCategory(category.id)}
-														className="focus-red inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border bg-white px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+												className="focus-red inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/35"
 													>
 														<Icon className="h-3.5 w-3.5" />
 														{category.title}
@@ -1283,7 +1313,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 									{/* 主输入框 */}
 									<div className="workspace-card order-2 mt-auto w-full">
-										<div className="relative min-h-16 rounded-lg border bg-white px-4 py-1 pr-16 transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5">
+								<div className="relative min-h-16 rounded-lg border bg-card px-4 py-1 pr-16 transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5">
 											<textarea
 												ref={inputRef}
 												value={inputValue}

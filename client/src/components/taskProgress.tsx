@@ -32,7 +32,7 @@ export default function TaskProgress() {
   if (!task) return null
 
   return (
-    <div className="fixed right-5 top-20 z-[100] flex min-w-72 items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-lg">
+    <div className="fixed right-5 top-20 z-[100] flex min-w-72 items-center gap-3 rounded-lg border bg-card px-4 py-3 shadow-lg">
       {task.status === "running" && <LoaderCircle className="h-5 w-5 animate-spin text-red-500" />}
       {task.status === "success" && <Check className="h-5 w-5 text-emerald-600" />}
       {task.status === "error" && <XCircle className="h-5 w-5 text-red-500" />}

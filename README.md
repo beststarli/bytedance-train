@@ -11,6 +11,21 @@
 
 ## 功能介绍
 
+## 本地启动
+### 前端
+
+### 后端
+
+### RustFS
+rustfs server \
+  --address :9000 \
+  --console-enable \
+  --console-address :9001 \
+  --access-key admin \
+  --secret-key 123456 \
+  --region us-east-1 \
+  /Users/beststar/data
+
 ## Bug修复
 ***欢迎在Issue中向我反馈Bug，我会尽快修复。***
 
