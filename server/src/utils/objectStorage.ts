@@ -39,6 +39,16 @@ function objectUrl(key: string) {
 	return `/api/content/assets/${key}`
 }
 
+function materialObjectKey(url: string, filename: string, sourceUrl?: string | null) {
+	const values = [url, sourceUrl || '']
+	const isGenerated = values.some((value) =>
+		value.includes('/assets/generated/')
+		|| value.includes('/generated/')
+		|| path.basename(value).startsWith('ai-generated-')
+	) || filename.startsWith('ai-generated-')
+	return `${isGenerated ? 'generated' : 'materials'}/${filename}`
+}
+
 export async function saveUpload(key: string, buffer: Buffer, contentType: string) {
 	const { client, bucket } = storageConfig()
 	if (client && bucket) {
@@ -95,7 +105,7 @@ export async function migrateLocalUploadsToObjectStorage() {
 	// 修复已迁移素材对应文章正文中的旧 /uploads 链接。
 	// 旧版本只更新了 materials.url，导致作品 Markdown 仍指向已删除的本地文件。
 	const { rows: storedMaterials } = await pool.query(
-		"SELECT url FROM materials WHERE url NOT LIKE '/uploads/%'"
+		"SELECT url, source_url FROM materials WHERE url NOT LIKE '/uploads/%'"
 	)
 	for (const material of storedMaterials) {
 		let filename = ''
@@ -106,7 +116,9 @@ export async function migrateLocalUploadsToObjectStorage() {
 		}
 		if (!filename) continue
 		const legacyUrl = `/uploads/${filename}`
-		const proxyUrl = objectUrl(`materials/${filename}`)
+		// AI 生成图原始对象位于 generated/。旧逻辑在重启时统一改成
+		// materials/，导致数据库指向不存在的对象。
+		const proxyUrl = objectUrl(materialObjectKey(material.url, filename, material.source_url))
 		await pool.query(
 			`UPDATE works
 			 SET content = REPLACE(content, $1, $2), updated_at = NOW()

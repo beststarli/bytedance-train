@@ -479,7 +479,15 @@ router.get('/assets/:scope/:filename', async (req: Request, res: Response) => {
 		return
 	}
 	try {
-		const asset = await getUpload(`${scope}/${filename}`)
+		let asset
+		try {
+			asset = await getUpload(`${scope}/${filename}`)
+		} catch (error) {
+			// 兼容旧启动迁移错误生成的 materials/ai-generated-* URL。
+			// 实际对象一直保存在 generated/，并未丢失。
+			if (scope !== 'materials' || !filename.startsWith('ai-generated-')) throw error
+			asset = await getUpload(`generated/${filename}`)
+		}
 		res.setHeader('Content-Type', asset.contentType)
 		res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
 		if (asset.etag) res.setHeader('ETag', asset.etag)
