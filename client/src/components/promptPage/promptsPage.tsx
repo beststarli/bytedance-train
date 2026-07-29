@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAuthStore } from '@/store/userStore'
+import AuthRequired from '@/components/auth-required'
 
 interface Prompt {
 	id: string
@@ -51,18 +53,33 @@ export default function PromptsPage() {
 	const [showForm, setShowForm] = useState(false)
 	const [form, setForm] = useState({ title: '', description: '', content: '', category: 'writing', icon: 'FileText' })
 	const [saving, setSaving] = useState(false)
+	const user = useAuthStore((state) => state.user)
 
-	const load = () => {
+	const load = (cancelled?: () => boolean) => {
+		if (!user) {
+			setPrompts([])
+			setLoading(false)
+			return
+		}
 		setLoading(true)
 		api<{ prompts: Prompt[] }>('/api/content/prompts')
-			.then((d) => setPrompts(d.prompts))
-			.finally(() => setLoading(false))
+			.then((d) => { if (!cancelled?.()) setPrompts(d.prompts) })
+			.catch(() => { if (!cancelled?.()) setPrompts([]) })
+			.finally(() => { if (!cancelled?.()) setLoading(false) })
 	}
 
-	useEffect(() => { load() }, [])
+	useEffect(() => {
+		let cancelled = false
+		setPrompts([])
+		setEditing(null)
+		setShowForm(false)
+		setActiveTab('')
+		load(() => cancelled)
+		return () => { cancelled = true }
+	}, [user?.id])
 
 	const handleSave = async () => {
-		if (!form.title || !form.content) return
+		if (!user || !form.title || !form.content) return
 		setSaving(true)
 		const method = editing ? 'PUT' : 'POST'
 		const url = editing ? `/api/content/prompts/${editing.id}` : '/api/content/prompts'
@@ -75,11 +92,13 @@ export default function PromptsPage() {
 	}
 
 	const handleDelete = async (id: string) => {
+		if (!user) return
 		await api(`/api/content/prompts/${id}`, { method: 'DELETE' })
 		load()
 	}
 
 	const openEdit = (p: Prompt) => {
+		if (!user) return
 		setEditing(p)
 		setForm({ title: p.title, description: p.description || '', content: p.content, category: p.category, icon: p.icon })
 		setShowForm(true)
@@ -90,6 +109,7 @@ export default function PromptsPage() {
 	}
 
 	const openNew = () => {
+		if (!user) return
 		setEditing(null)
 		setForm({ title: '', description: '', content: '', category: 'writing', icon: 'FileText' })
 		setShowForm(true)
@@ -121,7 +141,7 @@ export default function PromptsPage() {
 						<h1 className="text-2xl font-bold">提示词模版</h1>
 						<p className="text-sm text-muted-foreground mt-1.5">沉淀可复用的创作方法，让 AI 输出保持稳定</p>
 					</div>
-					<Button onClick={openNew} className="h-10 rounded-lg bg-[#f5222d] hover:bg-[#df1722] text-white gap-2">
+					<Button disabled={!user} onClick={openNew} className="h-10 rounded-lg bg-[#f5222d] hover:bg-[#df1722] text-white gap-2">
 						<Plus className="w-4 h-4" />新建提示词模版
 					</Button>
 				</div>
@@ -199,7 +219,9 @@ export default function PromptsPage() {
 				)}
 
 				{/* Tab 分类列表 */}
-				{loading ? (
+				{!user ? (
+					<AuthRequired className="min-h-[50vh]" />
+				) : loading ? (
 					<div className="text-center py-12 text-muted-foreground">加载中...</div>
 				) : prompts.length === 0 ? (
 					<div className="text-center py-12 text-muted-foreground">暂无提示词模版</div>

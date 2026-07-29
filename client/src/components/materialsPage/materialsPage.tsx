@@ -1,10 +1,13 @@
 "use client"
 
 import React, { useState, useEffect, useRef } from 'react'
-import { VideoIcon, Upload, Trash2 } from 'lucide-react'
+import { Upload, Trash2 } from 'lucide-react'
 import { api } from '@/api/api'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { formatSize } from '@/lib/tools'
+import { useAuthStore } from '@/store/userStore'
+import AuthRequired from '@/components/auth-required'
 
 interface Material {
   id: string
@@ -15,12 +18,6 @@ interface Material {
   created_at: string
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + 'B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
-}
-
 export default function MaterialsPage() {
   const [materials, setMaterials] = useState<Material[]>([])
   const [loading, setLoading] = useState(true)
@@ -29,19 +26,33 @@ export default function MaterialsPage() {
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+  const user = useAuthStore((state) => state.user)
 
-  const load = () => {
+  const load = (cancelled?: () => boolean) => {
+    if (!user) {
+      setMaterials([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     api<{ materials: Material[] }>('/api/content/materials')
-      .then((d) => setMaterials(d.materials))
-      .finally(() => setLoading(false))
+      .then((d) => { if (!cancelled?.()) setMaterials(d.materials) })
+      .catch(() => { if (!cancelled?.()) setMaterials([]) })
+      .finally(() => { if (!cancelled?.()) setLoading(false) })
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    let cancelled = false
+    setMaterials([])
+    setPendingDelete(null)
+    setDeleteError('')
+    load(() => cancelled)
+    return () => { cancelled = true }
+  }, [user?.id])
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (!file || !user) return
     if (file.size > 10 * 1024 * 1024) { alert('文件不能超过10MB'); return }
 
     setUploading(true)
@@ -58,6 +69,7 @@ export default function MaterialsPage() {
         method: 'POST',
         body: JSON.stringify({ filename: file.name, data: base64, type }),
       })
+      setLoading(true)
       load()
     } catch (error) {
       alert(error instanceof Error ? error.message : '上传失败')
@@ -66,12 +78,13 @@ export default function MaterialsPage() {
   }
 
   const handleDelete = async () => {
-    if (!pendingDelete || deleting) return
+    if (!user || !pendingDelete || deleting) return
     setDeleting(true)
     setDeleteError('')
     try {
       await api(`/api/content/materials/${pendingDelete.id}`, { method: 'DELETE' })
       setPendingDelete(null)
+      setLoading(true)
       load()
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : '删除失败，请稍后重试')
@@ -90,14 +103,16 @@ export default function MaterialsPage() {
             <p className="text-sm text-muted-foreground mt-1.5">管理图片、视频和创作参考，共 {materials.length} 个素材</p>
           </div>
           <div>
-            <input ref={fileRef} type="file" accept="image/*,video/*" onChange={handleUpload} className="hidden" disabled={uploading} />
-            <Button onClick={() => fileRef.current?.click()} disabled={uploading} className="h-10 rounded-lg bg-[#f5222d] hover:bg-[#df1722] text-white gap-2">
+            <input ref={fileRef} type="file" accept="image/*,video/*" onChange={handleUpload} className="hidden" disabled={uploading || !user} />
+            <Button onClick={() => fileRef.current?.click()} disabled={uploading || !user} className="h-10 rounded-lg bg-[#f5222d] hover:bg-[#df1722] text-white gap-2">
               <Upload className="w-4 h-4" />{uploading ? '上传中...' : '上传素材'}
             </Button>
           </div>
         </div>
 
-        {loading ? (
+        {!user ? (
+          <AuthRequired className="min-h-[50vh]" />
+        ) : loading ? (
           <div className="text-center py-12 text-muted-foreground">加载中...</div>
         ) : materials.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">暂无素材</div>
@@ -109,11 +124,19 @@ export default function MaterialsPage() {
                   <div className="aspect-video bg-muted flex items-center justify-center relative overflow-hidden">
                     {m.type === 'image' ? (
                       <img src={m.url} alt={m.filename} className="w-full h-full object-cover" />
+                    ) : m.type === 'video' ? (
+                      <video
+                        src={m.url}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        aria-label={`视频素材 ${m.filename}`}
+                        className="h-full w-full bg-black object-contain"
+                      >
+                        当前浏览器不支持视频播放。
+                      </video>
                     ) : (
-                      <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                        <VideoIcon className="w-8 h-8" />
-                        <span className="text-xs">视频预览</span>
-                      </div>
+                      <span className="text-xs text-muted-foreground">暂不支持预览</span>
                     )}
                     <button
                       onClick={() => {

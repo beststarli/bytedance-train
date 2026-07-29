@@ -16,6 +16,7 @@ import { api } from "@/api/api"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { resolveAssetUrl } from "@/lib/asset-url"
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -65,6 +66,7 @@ function getArticlePreview(content: string) {
 	const image = markdownImage?.[1] || directImage?.[0] || null
 	const text = content
 		.replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+		.replace(/\[(?:AI 生成视频|视频(?::[^\]]*)?)\]\([^)]+\)/g, "")
 		.replace(/(?:https?:\/\/|\/)[^\s)]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?/gi, "")
 		.replace(/[#>*_`-]/g, "")
 		.replace(/\s+/g, " ")
@@ -76,11 +78,21 @@ function ArticleMarkdown({ content }: { content: string }) {
 	return (
 		<div className="space-y-4 text-justify text-[16px] leading-8 text-foreground/90">
 			{content.split("\n").map((line, index) => {
+				const video = line.trim().match(/^\[(?:AI 生成视频|视频(?::[^\]]*)?)\]\(([^)]+)\)$/)
+				if (video) {
+					return (
+						<figure key={index} className="mx-auto w-full max-w-3xl overflow-hidden rounded-lg border bg-black shadow-sm">
+							<video src={resolveAssetUrl(video[1])} controls playsInline preload="metadata" className="aspect-video w-full bg-black object-contain">
+								当前浏览器不支持视频播放。
+							</video>
+						</figure>
+					)
+				}
 				const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 				if (image) {
 					return (
 						<figure key={index} className="flex flex-col items-center">
-							<img src={image[2]} alt="" className="max-h-[40vh] max-w-[50%] rounded-md object-contain" />
+							<img src={resolveAssetUrl(image[2])} alt="" className="max-h-[40vh] max-w-[50%] rounded-md object-contain" />
 						</figure>
 					)
 				}

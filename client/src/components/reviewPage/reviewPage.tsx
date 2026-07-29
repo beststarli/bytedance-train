@@ -16,6 +16,8 @@ import { api } from "@/api/api"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useAuthStore } from "@/store/userStore"
+import AuthRequired from "@/components/auth-required"
 
 interface Work {
   id: string
@@ -37,13 +39,23 @@ export default function ReviewPage() {
   const [works, setWorks] = useState<Work[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
+  const user = useAuthStore((state) => state.user)
 
   useEffect(() => {
+    let cancelled = false
+    setWorks([])
+    setQuery("")
+    if (!user) {
+      setLoading(false)
+      return
+    }
+    setLoading(true)
     api<{ works: Work[] }>("/api/content/works")
-      .then((data) => setWorks(data.works))
-      .catch(() => setWorks([]))
-      .finally(() => setLoading(false))
-  }, [])
+      .then((data) => { if (!cancelled) setWorks(data.works) })
+      .catch(() => { if (!cancelled) setWorks([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [user?.id])
 
   const filtered = useMemo(
     () => works.filter((work) => `${work.title}${work.content}`.toLowerCase().includes(query.toLowerCase())),
@@ -71,7 +83,7 @@ export default function ReviewPage() {
             <h1 className="text-2xl font-bold">内容审核</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">在发布前确认安全风险、质量评分和 AI 修改建议。</p>
           </div>
-          <Button className="h-10 w-full rounded-lg bg-[#f5222d] text-white hover:bg-[#df1722] sm:w-auto">
+          <Button disabled={!user} className="h-10 w-full rounded-lg bg-[#f5222d] text-white hover:bg-[#df1722] sm:w-auto">
             <ShieldCheck className="mr-1.5 h-4 w-4" /> 批量发起审核
           </Button>
         </div>
@@ -95,6 +107,7 @@ export default function ReviewPage() {
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                disabled={!user}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索待审核内容"
@@ -110,7 +123,9 @@ export default function ReviewPage() {
             <span>作品</span><span>安全状态</span><span>质量评分</span><span>更新时间</span><span />
           </div>
 
-          {loading ? (
+          {!user ? (
+            <AuthRequired className="min-h-[360px]" />
+          ) : loading ? (
             <div className="py-20 text-center text-sm text-muted-foreground">正在加载审核队列…</div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center py-20 text-center">

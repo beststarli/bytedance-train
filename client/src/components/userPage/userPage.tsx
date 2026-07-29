@@ -33,6 +33,7 @@ import {
 
 interface UserPageProps {
 	onNavigate?: (menu: string) => void
+	onLoginClick?: () => void
 }
 
 interface DashboardData {
@@ -100,7 +101,7 @@ function WorksChart({ points }: { points: LatestPerformance["points"] }) {
 	return <div ref={chartRef} className="h-72 w-full" role="img" aria-label="最新发布文章阅读、点赞与收藏数据图表" />
 }
 
-export default function UserPage({ onNavigate }: UserPageProps) {
+export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 	const { user, setAuth, token } = useAuthStore()
 	const [profileOpen, setProfileOpen] = useState(false)
 	const [avatarOpen, setAvatarOpen] = useState(false)
@@ -118,54 +119,39 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 	const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 })
 	const fileInputRef = useRef<HTMLInputElement>(null)
 	const cropDragRef = useRef<{ pointerId: number; startX: number; startY: number; offsetX: number; offsetY: number } | null>(null)
-	const inspirationAsideRef = useRef<HTMLElement>(null)
+	useEffect(() => {
+		setNickname(user?.nickname || "")
+		setEmail(user?.email || "")
+		setNewPassword("")
+		setConfirmPassword("")
+		setDashboard(null)
+		setLatestPerformance({ work: null, points: [] })
+		setProfileOpen(false)
+		setAvatarOpen(false)
+		setAvatarSource("")
+	}, [user?.id])
 
 	useEffect(() => {
-		const aside = inspirationAsideRef.current
-		const scrollContainer = aside?.closest<HTMLElement>(".enter-workspace")
-		if (!aside || !scrollContainer || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
-
-		let previousScrollTop = scrollContainer.scrollTop
-		let offset = 0
-		let animationFrame = 0
-
-		const settle = () => {
-			offset *= 0.82
-			if (Math.abs(offset) < 0.1) offset = 0
-			aside.style.transform = offset ? `translate3d(0, ${offset}px, 0)` : ""
-			animationFrame = offset ? window.requestAnimationFrame(settle) : 0
-		}
-
-		const handleScroll = () => {
-			const nextScrollTop = scrollContainer.scrollTop
-			const delta = nextScrollTop - previousScrollTop
-			previousScrollTop = nextScrollTop
-			offset = Math.max(-16, Math.min(16, offset - delta * 0.28))
-			aside.style.transform = `translate3d(0, ${offset}px, 0)`
-			if (!animationFrame) animationFrame = window.requestAnimationFrame(settle)
-		}
-
-		scrollContainer.addEventListener("scroll", handleScroll, { passive: true })
-		return () => {
-			scrollContainer.removeEventListener("scroll", handleScroll)
-			if (animationFrame) window.cancelAnimationFrame(animationFrame)
-			aside.style.transform = ""
-		}
-	}, [])
-
-	useEffect(() => {
+		if (!user) return
+		let cancelled = false
 		api<DashboardData>("/api/content/creator-dashboard")
-			.then(setDashboard)
-			.catch(() => setDashboard(null))
-	}, [])
+			.then((data) => { if (!cancelled) setDashboard(data) })
+			.catch(() => { if (!cancelled) setDashboard(null) })
+		return () => { cancelled = true }
+	}, [user?.id])
 
 	useEffect(() => {
+		if (!user) return
+		let cancelled = false
+		setLatestPerformance({ work: null, points: [] })
 		api<LatestPerformance>(`/api/content/creator-dashboard/latest-performance?days=${chartRange}`)
-			.then(setLatestPerformance)
-			.catch(() => setLatestPerformance({ work: null, points: [] }))
-	}, [chartRange])
+			.then((data) => { if (!cancelled) setLatestPerformance(data) })
+			.catch(() => { if (!cancelled) setLatestPerformance({ work: null, points: [] }) })
+		return () => { cancelled = true }
+	}, [chartRange, user?.id])
 
 	const saveProfile = async () => {
+		if (!user) return
 		if (newPassword && newPassword !== confirmPassword) {
 			toast.error("两次输入的密码不一致")
 			return
@@ -231,7 +217,7 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 	})
 
 	const confirmAvatar = async () => {
-		if (!avatarSource || !avatarImageSize.width) return
+		if (!user || !avatarSource || !avatarImageSize.width) return
 		setSaving(true)
 		try {
 			const imageElement = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -279,18 +265,18 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 						<section className="workspace-card relative overflow-hidden rounded-md bg-card p-6 shadow-sm sm:p-8">
 							<div className="flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-center">
 								<div className="flex items-center gap-5">
-									<button type="button" onClick={() => setAvatarOpen(true)} className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-red-400 to-red-600 text-2xl font-bold text-white">
+									<button type="button" disabled={!user} onClick={() => setAvatarOpen(true)} className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-full bg-gray-300 border-2 border-gray-500 from-red-400 to-red-600 text-2xl font-bold text-white disabled:cursor-default disabled:grayscale">
 										<span className="absolute inset-0 flex items-center justify-center">{avatarText}</span>
 										{user?.avatar_url && <img src={resolveAssetUrl(user.avatar_url)} alt="头像" className="absolute inset-0 h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = "none" }} />}
 										<span className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 transition-opacity group-hover:opacity-100"><Camera className="h-5 w-5" /></span>
 									</button>
 									<div>
-										<div className="flex items-center gap-2"><h1 className="text-xl font-bold">{user?.nickname || "未设置昵称"}</h1><span className="rounded bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700">创作者认证</span></div>
-										<p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3.5 w-3.5" /> {user?.phone}</p>
+										<div className="flex items-center gap-2"><h1 className="text-xl font-bold">{user ? (user.nickname || "未设置昵称") : "未登录"}</h1>{user && <span className="rounded bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700">创作者认证</span>}</div>
+										<p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3.5 w-3.5" /> {user?.phone || "登录后查看个人资料"}</p>
 										<div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground"><span><strong className="mr-1 text-foreground">{stats.published}</strong>已发布</span><span><strong className="mr-1 text-foreground">{stats.works}</strong>作品</span><span><strong className="mr-1 text-foreground">{stats.views}</strong>阅读</span><span><strong className="mr-1 text-foreground">{stats.likes}</strong>获赞</span><span><strong className="mr-1 text-foreground">{stats.favorites}</strong>获收藏</span></div>
 									</div>
 								</div>
-								<Button onClick={() => setProfileOpen(true)} className="bg-red-500 text-white hover:bg-red-600"><Pencil className="mr-1.5 h-4 w-4" />修改资料</Button>
+								{user ? <Button onClick={() => setProfileOpen(true)} className="bg-red-500 text-white hover:bg-red-600"><Pencil className="mr-1.5 h-4 w-4" />修改资料</Button> : <Button onClick={onLoginClick} className="bg-red-500 text-white hover:bg-red-600">登录</Button>}
 							</div>
 						</section>
 
@@ -338,7 +324,7 @@ export default function UserPage({ onNavigate }: UserPageProps) {
 						</section>
 					</div>
 
-					<aside ref={inspirationAsideRef} className="workspace-card rounded-md bg-card p-5 shadow-sm xl:sticky xl:top-8 xl:self-start xl:will-change-transform">
+					<aside className="workspace-card scrollBar-hidden max-h-[calc(100dvh-104px)] overflow-y-auto rounded-md bg-card p-5 shadow-sm xl:sticky xl:top-0 xl:self-start">
 						<div className="mb-3 flex items-center justify-between">
 							<div className="flex items-center gap-2">
 								<span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-600"><Lightbulb className="h-4 w-4" /></span>

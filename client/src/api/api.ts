@@ -12,9 +12,11 @@ export interface User {
 }
 
 let refreshPromise: Promise<string | null> | null = null
+let authGeneration = 0
 
-async function refreshAccessToken() {
+export async function refreshAccessToken() {
     if (!refreshPromise) {
+        const requestGeneration = authGeneration
         refreshPromise = fetch(`${API_BASE}/api/auth/refresh`, {
             method: 'POST',
             credentials: 'include',
@@ -24,6 +26,7 @@ async function refreshAccessToken() {
                 return null
             }
             const data = await res.json()
+            if (requestGeneration !== authGeneration) return null
             useAuthStore.getState().setAuth(data.user, data.accessToken)
             return data.accessToken as string
         }).catch(() => {
@@ -66,10 +69,6 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     return data
 }
 
-export async function restoreSession() {
-    return refreshAccessToken()
-}
-
 function isExpiring(token: string) {
     try {
         const payload = JSON.parse(atob(token.split('.')[1]))
@@ -85,9 +84,11 @@ export async function getValidAccessToken() {
 }
 
 export async function logoutSession() {
+    authGeneration += 1
+    useAuthStore.getState().logout()
+    localStorage.removeItem('auth-storage')
     await fetch(`${API_BASE}/api/auth/logout`, {
         method: 'POST',
         credentials: 'include',
     }).catch(() => undefined)
-    useAuthStore.getState().logout()
 }

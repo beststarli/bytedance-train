@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-    title: "今日头条 - AI创作者辅助生产与分发平台",
+    title: "AI创作者辅助生产与分发平台",
     description: "AI创作者辅助生产与分发平台，一站式AI内容创作、智能审核与分发",
 };
 
