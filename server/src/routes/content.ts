@@ -14,6 +14,35 @@ function imageMarkdown(urls: string[]) {
 	return urls.map((url, index) => `![AI 生成图片${urls.length > 1 ? ` ${index + 1}` : ''}](${url})`).join('\n\n')
 }
 
+function imageExtension(contentType: string) {
+	if (contentType === 'image/jpeg') return 'jpg'
+	if (contentType === 'image/webp') return 'webp'
+	if (contentType === 'image/gif') return 'gif'
+	return 'png'
+}
+
+async function downloadImage(url: string) {
+	const parsedUrl = new URL(url)
+	if (parsedUrl.protocol !== 'https:') throw new Error('生成图片地址不是安全的 HTTPS 地址')
+
+	const response = await fetch(url)
+	if (!response.ok) throw new Error(`下载生成图片失败：${response.status}`)
+	const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() || ''
+	if (!contentType.startsWith('image/')) throw new Error('生成结果不是有效图片')
+
+	const buffer = Buffer.from(await response.arrayBuffer())
+	if (buffer.length > 20 * 1024 * 1024) throw new Error('生成图片超过 20MB，无法持久化')
+	return { buffer, contentType }
+}
+
+async function persistGeneratedImages(urls: string[], userId: string) {
+	return Promise.all(urls.map(async (sourceUrl) => {
+		const { buffer, contentType } = await downloadImage(sourceUrl)
+		const filename = `ai-generated-${userId}-${Date.now()}-${randomUUID().slice(0, 8)}.${imageExtension(contentType)}`
+		return saveUpload(`generated/${filename}`, buffer, contentType)
+	}))
+}
+
 function videoMarkdown(url: string) {
 	return `[AI 生成视频](${url})`
 }
@@ -193,7 +222,9 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 
 		switch (modelType) {
 			case 'image': {
-				const urls = await generateImage(content)
+				const temporaryUrls = await generateImage(content)
+				res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'image', message: '正在持久化生成图片' })}\n\n`)
+				const urls = await persistGeneratedImages(temporaryUrls, userId)
 				fullContent = imageMarkdown(urls) || '图片生成失败'
 				res.write(`data: ${JSON.stringify({ type: 'image', content: fullContent, urls })}\n\n`)
 				if (urls.length > 0) {
@@ -443,7 +474,7 @@ router.delete('/works/:id', async (req: Request, res: Response) => {
 router.get('/assets/:scope/:filename', async (req: Request, res: Response) => {
 	const scope = String(req.params.scope || '')
 	const filename = String(req.params.filename || '')
-	if (!['materials', 'avatars'].includes(scope) || filename !== path.basename(filename)) {
+	if (!['materials', 'avatars', 'generated'].includes(scope) || filename !== path.basename(filename)) {
 		res.status(400).json({ error: '资源路径无效' })
 		return
 	}
@@ -483,9 +514,9 @@ router.post('/messages/:id/import-image', async (req: Request, res: Response) =>
 	)
 	const messageContent = String(rows[0]?.content || '')
 	const imageUrls = [
-		...Array.from(messageContent.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g), (match) => match[1]),
+		...Array.from(messageContent.matchAll(/!\[[^\]]*\]\(([^)\s]+)\)/g), (match) => match[1]),
 		...messageContent.split('\n').map((line) => line.trim()).filter((line) =>
-			/^https?:\/\/\S+\.(png|jpe?g|gif|webp)(\?\S*)?$/i.test(line),
+			/^(https?:\/\/|\/)\S+\.(png|jpe?g|gif|webp)(\?\S*)?$/i.test(line),
 		),
 	]
 	if (!rows[0] || !requestedUrl || !imageUrls.includes(requestedUrl)) {
@@ -494,9 +525,6 @@ router.post('/messages/:id/import-image', async (req: Request, res: Response) =>
 	}
 
 	try {
-		const parsedUrl = new URL(requestedUrl)
-		if (parsedUrl.protocol !== 'https:') throw new Error('只允许导入 HTTPS 图片')
-
 		const existing = await pool.query(
 			'SELECT id, filename, url, type, size, source_url, created_at FROM materials WHERE user_id = $1 AND source_url = $2 LIMIT 1',
 			[userId, requestedUrl],
@@ -506,21 +534,31 @@ router.post('/messages/:id/import-image', async (req: Request, res: Response) =>
 			return
 		}
 
-		const response = await fetch(requestedUrl)
-		if (!response.ok) throw new Error(`下载生成图片失败：${response.status}`)
-		const contentType = response.headers.get('content-type')?.split(';')[0] || ''
-		if (!contentType.startsWith('image/')) throw new Error('远程资源不是图片')
-		const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/webp' ? 'webp' : 'png'
-		const filename = `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${extension}`
-		const buffer = Buffer.from(await response.arrayBuffer())
-		const url = await saveUpload(`materials/${filename}`, buffer, contentType)
+		const isPersistedGeneratedImage =
+			requestedUrl.startsWith('/api/content/assets/generated/ai-generated-')
+			|| requestedUrl.startsWith('/uploads/ai-generated-')
+
+		let filename: string
+		let url: string
+		let size: number | null
+		if (isPersistedGeneratedImage) {
+			filename = path.basename(requestedUrl)
+			url = requestedUrl
+			size = null
+		} else {
+			const { buffer, contentType } = await downloadImage(requestedUrl)
+			filename = `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${imageExtension(contentType)}`
+			url = await saveUpload(`materials/${filename}`, buffer, contentType)
+			size = buffer.length
+		}
+
 		const inserted = await pool.query(
 			`INSERT INTO materials (user_id, filename, url, type, size, source_url)
 			 VALUES ($1, $2, $3, 'image', $4, $5)
 			 ON CONFLICT (user_id, source_url) WHERE source_url IS NOT NULL
 			 DO UPDATE SET source_url = EXCLUDED.source_url
 			 RETURNING id, filename, url, type, size, source_url, created_at`,
-			[userId, filename, url, buffer.length, requestedUrl],
+			[userId, filename, url, size, requestedUrl],
 		)
 		res.json({ material: inserted.rows[0], already_exists: false })
 	} catch (error) {
@@ -540,7 +578,7 @@ router.post('/materials', async (req: Request, res: Response) => {
 	}
 
 	try {
-		const matches = data.match(/^data:(image\/\w+|video\/\w+|audio\/\w+);base64,(.+)$/)
+		const matches = data.match(/^data:(image\/[\w.+-]+|video\/[\w.+-]+|audio\/[\w.+-]+);base64,(.+)$/)
 		if (!matches) {
 			res.status(400).json({ error: '文件格式不正确' })
 			return
@@ -575,7 +613,10 @@ router.delete('/materials/:id', async (req: Request, res: Response) => {
 			res.status(404).json({ error: '素材不存在或已删除' })
 			return
 		}
-		await deleteUpload(rows[0].url)
+		const isGeneratedImage =
+			rows[0].url.startsWith('/api/content/assets/generated/')
+			|| rows[0].url.startsWith('/uploads/ai-generated-')
+		if (!isGeneratedImage) await deleteUpload(rows[0].url)
 		await pool.query('DELETE FROM materials WHERE id = $1 AND user_id = $2', [req.params.id, userId])
 		res.json({ message: '已删除' })
 	} catch (error) {
@@ -681,7 +722,8 @@ router.get('/notifications', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { rows } = await pool.query(
-		`SELECT wr.id, wr.type, wr.created_at, w.id AS work_id, w.title AS work_title,
+		`SELECT CONCAT(wr.user_id, ':', wr.work_id, ':', wr.type) AS id,
+				wr.type, wr.created_at, w.id AS work_id, w.title AS work_title,
 				COALESCE(actor.nickname, '创作者') AS actor_name, actor.avatar_url
 		 FROM work_reactions wr
 		 JOIN works w ON w.id = wr.work_id

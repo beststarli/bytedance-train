@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useEditorStore } from "@/store/editorStore"
+import { useAuthStore } from "@/store/userStore"
+import AuthRequired from "@/components/auth-required"
 import { toast } from "sonner"
 
 interface Work {
@@ -51,15 +53,26 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
   const [deleteTarget, setDeleteTarget] = useState<Work | null>(null)
   const [saving, setSaving] = useState(false)
   const editor = useEditorStore()
+  const user = useAuthStore((state) => state.user)
 
-  const load = () => {
+  useEffect(() => {
+    let cancelled = false
+    setWorks([])
+    setPendingEdit(null)
+    setDeleteTarget(null)
+    setSearch("")
+    setStatus("all")
+    if (!user) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     api<{ works: Work[] }>("/api/content/works")
-      .then((data) => setWorks(data.works))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => { load() }, [])
+      .then((data) => { if (!cancelled) setWorks(data.works) })
+      .catch(() => { if (!cancelled) setWorks([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [user?.id])
 
   const filtered = useMemo(() => works.filter((work) => {
     const matchesText = `${work.title}${work.content}`.toLowerCase().includes(search.toLowerCase())
@@ -101,7 +114,7 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
   }
 
   const confirmDelete = async () => {
-    if (!deleteTarget) return
+    if (!deleteTarget || !user) return
     setSaving(true)
     try {
       await api(`/api/content/works/${deleteTarget.id}`, { method: "DELETE" })
@@ -120,11 +133,11 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
           <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:flex-nowrap">
             <div className="relative min-w-[240px] flex-1 xl:w-80 xl:flex-none">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="搜索作品标题或正文" value={search} onChange={(event) => setSearch(event.target.value)} className="h-10 border-transparent bg-card pl-9 shadow-sm" />
+              <Input disabled={!user} placeholder="搜索作品标题或正文" value={search} onChange={(event) => setSearch(event.target.value)} className="h-10 border-transparent bg-card pl-9 shadow-sm" />
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="h-10 min-w-28 shrink-0 justify-between bg-card text-xs">
+                <Button disabled={!user} variant="outline" className="h-10 min-w-28 shrink-0 justify-between bg-card text-xs">
                   {status === "all" ? "全部状态" : status === "published" ? "已发布" : "草稿"}
                   <ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
                 </Button>
@@ -148,7 +161,7 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
 
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 p-3 sm:p-4">
-            {loading ? Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-36 animate-pulse rounded-lg border bg-card" />) : filtered.length === 0 ? (
+            {!user ? <AuthRequired className="h-full" /> : loading ? Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-36 animate-pulse rounded-lg border bg-card" />) : filtered.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-sm text-muted-foreground"><FileText className="mb-3 h-7 w-7 opacity-40" />{search ? "未找到匹配的作品" : "暂无作品"}</div>
             ) : filtered.map((work) => {
               const preview = getPreview(work.content)

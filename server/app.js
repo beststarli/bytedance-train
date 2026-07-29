@@ -17,6 +17,8 @@ async function runMigrations() {
         await db_1.pool.query(`
 			ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname VARCHAR(50);
 			ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users (LOWER(email)) WHERE email IS NOT NULL AND BTRIM(email) <> '';
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nickname_unique ON users (LOWER(nickname)) WHERE nickname IS NOT NULL AND BTRIM(nickname) <> '';
 			ALTER TABLE chats ADD COLUMN IF NOT EXISTS summary TEXT;
 			CREATE TABLE IF NOT EXISTS works (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -40,6 +42,12 @@ async function runMigrations() {
 			);
 			CREATE INDEX IF NOT EXISTS idx_work_reactions_work_id ON work_reactions(work_id);
 			CREATE INDEX IF NOT EXISTS idx_work_reactions_user_id ON work_reactions(user_id);
+			CREATE TABLE IF NOT EXISTS work_view_events (
+				id BIGSERIAL PRIMARY KEY,
+				work_id UUID NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+				viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+			CREATE INDEX IF NOT EXISTS idx_work_view_events_work_time ON work_view_events(work_id, viewed_at);
 			CREATE TABLE IF NOT EXISTS materials (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -49,6 +57,9 @@ async function runMigrations() {
 				size INTEGER,
 				created_at TIMESTAMPTZ DEFAULT NOW()
 			);
+			ALTER TABLE materials ADD COLUMN IF NOT EXISTS source_url TEXT;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_materials_user_source_unique
+				ON materials (user_id, source_url) WHERE source_url IS NOT NULL;
 			CREATE INDEX IF NOT EXISTS idx_materials_user_id ON materials(user_id);
 			ALTER TABLE works ADD COLUMN IF NOT EXISTS quality_score DECIMAL(3,1);
 			ALTER TABLE works ADD COLUMN IF NOT EXISTS view_count INTEGER DEFAULT 0;
@@ -91,7 +102,7 @@ app.use(express_1.default.urlencoded({ extended: true, limit: '20mb' }));
 // 静态文件服务（头像等上传文件）
 app.use('/uploads', express_1.default.static(path_1.default.join(__dirname, 'uploads')));
 // 路由
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
     res.json({ message: 'Hello Express + TypeScript! 🚀' });
 });
 app.use('/api/auth', auth_1.default);

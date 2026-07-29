@@ -252,6 +252,11 @@ function renderEditorInline(value: string) {
 function markdownToEditorHtml(content: string) {
 	if (!content) return ''
 	return content.split('\n').map((line) => {
+		const video = line.trim().match(/^\[(?:AI 生成视频|视频(?::([^\]]*))?)\]\(([^)]+)\)$/)
+		if (video) {
+			const label = video[1] || 'AI 生成视频'
+			return `<figure contenteditable="false" data-video-node="true" data-video-label="${escapeHtml(label)}" data-video-url="${escapeHtml(video[2])}"><video src="${escapeHtml(resolveAssetUrl(video[2]))}" controls preload="metadata" playsinline></video><button type="button" data-remove-video="true" aria-label="删除视频" title="删除视频">×</button></figure>`
+		}
 		const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 		if (image) {
 			return `<figure contenteditable="false" data-image-node="true" data-image-alt="${escapeHtml(image[1])}" data-image-url="${escapeHtml(image[2])}"><img src="${escapeHtml(resolveAssetUrl(image[2]))}" alt=""><button type="button" data-remove-image="true" aria-label="删除图片" title="删除图片">×</button></figure>`
@@ -270,6 +275,9 @@ function editorInlineToMarkdown(node: Node): string {
 	if (node.dataset.imageNode === 'true') {
 		return `\n![${node.dataset.imageAlt || ''}](${node.dataset.imageUrl || ''})\n`
 	}
+	if (node.dataset.videoNode === 'true') {
+		return `\n[视频:${node.dataset.videoLabel || '视频'}](${node.dataset.videoUrl || ''})\n`
+	}
 	const content = Array.from(node.childNodes).map(editorInlineToMarkdown).join('')
 	if (node.tagName === 'STRONG' || node.tagName === 'B') return `**${content}**`
 	if (node.tagName === 'EM' || node.tagName === 'I') return `*${content}*`
@@ -284,6 +292,7 @@ function editorHtmlToMarkdown(editor: HTMLDivElement) {
 		if (node.nodeType === Node.TEXT_NODE) return node.textContent || ''
 		if (!(node instanceof HTMLElement)) return ''
 		if (node.dataset.imageNode === 'true') return `![${node.dataset.imageAlt || ''}](${node.dataset.imageUrl || ''})`
+		if (node.dataset.videoNode === 'true') return `[视频:${node.dataset.videoLabel || '视频'}](${node.dataset.videoUrl || ''})`
 		const content = editorInlineToMarkdown(node).replace(/\n+$/, '')
 		if (node.tagName === 'H1') return `# ${content}`
 		if (node.tagName === 'H2') return `## ${content}`
@@ -302,11 +311,13 @@ function InlineArticleEditor({
 	onChange,
 	editorRef,
 	fillHeight = false,
+	disabled = false,
 }: {
 	content: string
 	onChange: (content: string) => void
 	editorRef: React.MutableRefObject<HTMLDivElement | null>
 	fillHeight?: boolean
+	disabled?: boolean
 }) {
 	const lastContentRef = useRef(content)
 
@@ -326,23 +337,27 @@ function InlineArticleEditor({
 		onChange(nextContent)
 	}, [editorRef, onChange])
 
-	const insertDroppedImage = (event: React.DragEvent<HTMLDivElement>) => {
+	const insertDroppedMaterial = (event: React.DragEvent<HTMLDivElement>) => {
 		event.preventDefault()
+		if (disabled) return
 		const raw = event.dataTransfer.getData('application/x-creator-material')
 		if (!raw || !editorRef.current) return
 		try {
 			const material = JSON.parse(raw) as Material
-			if (material.type !== 'image') return
+			if (material.type !== 'image' && material.type !== 'video') return
+			const markdown = material.type === 'video'
+				? `[视频:${material.filename}](${material.url})`
+				: `![${material.filename}](${material.url})`
 			const holder = document.createElement('div')
-			holder.innerHTML = markdownToEditorHtml(`![${material.filename}](${material.url})`)
-			const imageNode = holder.firstElementChild
-			if (!imageNode) return
+			holder.innerHTML = markdownToEditorHtml(markdown)
+			const materialNode = holder.firstElementChild
+			if (!materialNode) return
 			const doc = document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
 			const range = doc.caretRangeFromPoint?.(event.clientX, event.clientY) || window.getSelection()?.getRangeAt(0)
 			if (range && editorRef.current.contains(range.commonAncestorContainer)) {
-				range.insertNode(imageNode)
+				range.insertNode(materialNode)
 			} else {
-				editorRef.current.append(imageNode)
+				editorRef.current.append(materialNode)
 			}
 			syncContent()
 		} catch {
@@ -359,10 +374,11 @@ function InlineArticleEditor({
 					node.dataset.empty = content.trim() ? 'false' : 'true'
 				}
 			}}
-			contentEditable
+			contentEditable={!disabled}
 			suppressContentEditableWarning
 			role="textbox"
 			aria-multiline="true"
+			aria-disabled={disabled}
 			data-placeholder="从这里开始写作，也可以将素材拖入正文…"
 			data-empty={content.trim() ? 'false' : 'true'}
 			className={cn(
@@ -370,19 +386,23 @@ function InlineArticleEditor({
 				fillHeight
 					? "scrollBar-hidden min-h-0 flex-1 overflow-y-auto"
 					: "min-h-[420px]",
+				disabled && "cursor-not-allowed bg-muted/25 text-muted-foreground",
 			)}
-			onInput={syncContent}
+			onInput={() => { if (!disabled) syncContent() }}
 			onClick={(event) => {
+				if (disabled) return
 				const target = event.target as HTMLElement
-				if (!target.closest('[data-remove-image="true"]')) return
-				target.closest('[data-image-node="true"]')?.remove()
+				const removeButton = target.closest('[data-remove-image="true"], [data-remove-video="true"]')
+				if (!removeButton) return
+				removeButton.closest('[data-image-node="true"], [data-video-node="true"]')?.remove()
 				syncContent()
 			}}
 			onDragOver={(event) => {
+				if (disabled) return
 				event.preventDefault()
 				event.dataTransfer.dropEffect = 'copy'
 			}}
-			onDrop={insertDroppedImage}
+			onDrop={insertDroppedMaterial}
 		/>
 	)
 }
@@ -392,7 +412,7 @@ function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInser
 		<section className="shrink-0 bg-card px-4 py-3">
 			<div className="mb-2 flex items-center justify-between">
 				<div className="flex items-center gap-2 text-xs font-semibold"><FolderOpen className="h-3.5 w-3.5 text-red-500" />素材库</div>
-				<span className="text-[10px] text-muted-foreground">拖拽图片到右侧正文，点击也可快速插入</span>
+				<span className="text-[10px] text-muted-foreground">拖拽图片或视频到右侧正文，点击也可快速插入</span>
 			</div>
 			<div className="flex min-h-20 gap-3 overflow-x-auto pb-1">
 				{materials.length ? materials.map((material) => (
@@ -400,9 +420,9 @@ function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInser
 						key={material.id}
 						type="button"
 						onClick={() => onInsert(material)}
-						disabled={material.type !== 'image'}
-						title={material.type === 'image' ? `插入 ${material.filename}` : '视频素材暂不支持嵌入正文'}
-						draggable={material.type === 'image'}
+						disabled={material.type !== 'image' && material.type !== 'video'}
+						title={`插入 ${material.filename}`}
+						draggable={material.type === 'image' || material.type === 'video'}
 						onDragStart={(event) => {
 							event.dataTransfer.setData('application/x-creator-material', JSON.stringify(material))
 							event.dataTransfer.effectAllowed = 'copy'
@@ -411,7 +431,9 @@ function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInser
 					>
 						{material.type === 'image'
 							? <img src={material.url} alt={material.filename} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
-							: <span className="flex h-full items-center justify-center text-[10px] text-muted-foreground">视频素材</span>}
+							: material.type === 'video'
+								? <span className="relative flex h-full w-full items-center justify-center bg-black"><video src={resolveAssetUrl(material.url)} muted preload="metadata" className="pointer-events-none h-full w-full object-cover" /><span className="absolute flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white"><Video className="h-4 w-4" /></span></span>
+								: <span className="flex h-full items-center justify-center text-[10px] text-muted-foreground">其他素材</span>}
 					</button>
 				)) : <div className="flex h-20 items-center text-xs text-muted-foreground">素材库暂无内容，可前往侧栏“素材库”上传。</div>}
 			</div>
@@ -458,17 +480,37 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 	// 加载聊天列表 + prompt 模板
 	useEffect(() => {
+		let cancelled = false
+		requestCounter.current += 1
+		setChats([])
+		setActiveChatId(null)
+		setMessages([])
+		setPrompts([])
+		setMaterials([])
+		setInputValue('')
+		setModelType(undefined)
+		setSelectedPromptCategory(null)
+		setDeleteChatTarget(null)
+		setLoadingChats(!!user)
 		if (!user) return
 		Promise.all([
 			api<{ chats: Chat[] }>('/api/content/chats'),
 			api<{ prompts: Prompt[] }>('/api/content/prompts'),
 			api<{ materials: Material[] }>('/api/content/materials'),
 		]).then(([chatData, promptData, materialData]) => {
+			if (cancelled) return
 			setChats(chatData.chats)
 			setPrompts(promptData.prompts)
 			setMaterials(materialData.materials)
-		}).finally(() => setLoadingChats(false))
-	}, [user])
+		}).catch(() => {
+			if (!cancelled) {
+				setChats([])
+				setPrompts([])
+				setMaterials([])
+			}
+		}).finally(() => { if (!cancelled) setLoadingChats(false) })
+		return () => { cancelled = true }
+	}, [user?.id])
 
 	// 切换聊天时加载消息
 	useEffect(() => {
@@ -495,7 +537,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 	// 回到新对话起始页；首次发送时再创建服务端会话，避免产生空对话。
 	const handleNewChat = useCallback(() => {
-		if (sending) return
+		if (sending || !user) return
 		requestCounter.current += 1
 		setActiveChatId(null)
 		setMessages([])
@@ -503,7 +545,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setModelType(undefined)
 		setSelectedPromptCategory(null)
 		requestAnimationFrame(() => inputRef.current?.focus())
-	}, [sending])
+	}, [sending, user])
 
 	// 删除聊天
 	const handleDeleteChat = useCallback(async () => {
@@ -762,8 +804,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [inputValue, isLoggedIn, creationMode, activeChatId])
 
 	const insertMaterial = useCallback((material: Material) => {
-		if (material.type !== 'image') return
-		const markdown = `![${material.filename}](${material.url})`
+		if (material.type !== 'image' && material.type !== 'video') return
+		const markdown = material.type === 'video'
+			? `[视频:${material.filename}](${material.url})`
+			: `![${material.filename}](${material.url})`
 		const editor = draftEditorRef.current
 		const selection = window.getSelection()
 		if (editor && selection?.rangeCount) {
@@ -771,11 +815,11 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			if (editor.contains(range.commonAncestorContainer)) {
 				const holder = document.createElement('div')
 				holder.innerHTML = markdownToEditorHtml(markdown)
-				const imageNode = holder.firstElementChild
-				if (imageNode) {
-					range.deleteContents()
-					range.insertNode(imageNode)
-					range.setStartAfter(imageNode)
+					const materialNode = holder.firstElementChild
+					if (materialNode) {
+						range.deleteContents()
+						range.insertNode(materialNode)
+						range.setStartAfter(materialNode)
 					range.collapse(true)
 					selection.removeAllRanges()
 					selection.addRange(range)
@@ -879,7 +923,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [])
 
 	const handlePublish = async (status: 'draft' | 'published') => {
-		if (!draftTitle.trim() || !draftContent.trim()) return
+		if (!user || !draftTitle.trim() || !draftContent.trim()) return
 		setPublishing(true)
 		emitTaskProgress({ title: status === 'published' ? '正在发布文章' : '正在保存草稿', status: 'running', message: '正在同步内容与作品数据' })
 		try {
@@ -891,7 +935,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			emitTaskProgress({ title: status === 'published' ? '文章发布成功' : '草稿保存成功', status: 'success', message: '内容已同步' })
 			if (status === 'published') {
 				clearEditor()
-				onNavigate?.('dashboard')
+				onNavigate?.('content')
 			}
 		} catch (error) {
 			emitTaskProgress({ title: '操作失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
@@ -910,6 +954,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}
 
 	const saveDraftAndClear = async () => {
+		if (!user) return
 		setClearingEditor(true)
 		try {
 			const data = await api<{ work: { id: string } }>(editingWorkId ? `/api/content/works/${editingWorkId}` : '/api/content/works', {
@@ -991,17 +1036,18 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						<div className="mb-5 flex items-center justify-between gap-4">
 							<div><button type="button" onClick={() => setCreationMode(null)} className="text-xs text-muted-foreground hover:text-red-500">← 返回创作方式</button><h1 className="mt-2 text-xl font-bold">内容写作台</h1></div>
 							<div className="flex gap-2">
-								<Button variant="ghost" disabled={publishing} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" />清空写作台</Button>
-								<Button variant="outline" disabled={publishing} onClick={() => void handlePublish('draft')}>保存草稿</Button>
-								<Button disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
+								<Button variant="ghost" disabled={publishing || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" />清空写作台</Button>
+								<Button variant="outline" disabled={publishing || !isLoggedIn} onClick={() => void handlePublish('draft')}>保存草稿</Button>
+								<Button disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
 							</div>
 						</div>
 						<div className="workspace-card overflow-hidden">
-							<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} placeholder="输入文章标题" className="w-full border-b bg-transparent px-7 py-6 text-2xl font-bold outline-none placeholder:text-muted-foreground/40" />
+							<input disabled={!isLoggedIn} value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} placeholder={isLoggedIn ? "输入文章标题" : "登录后开始写作"} className="w-full border-b bg-transparent px-7 py-6 text-2xl font-bold outline-none placeholder:text-muted-foreground/40 disabled:cursor-not-allowed disabled:bg-muted/25" />
 							<InlineArticleEditor
 								content={draftContent}
 								onChange={setDraftContent}
 								editorRef={draftEditorRef}
+								disabled={!isLoggedIn}
 							/>
 						</div>
 					</div>
@@ -1018,9 +1064,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					<div className="flex items-center justify-between gap-3">
 						<div><div className="text-sm font-bold">内容写作台</div><div className="mt-1 text-[10px] text-muted-foreground">内容会在发布前保留在当前工作区</div></div>
 						<div className="flex gap-2">
-							<Button variant="ghost" size="sm" disabled={publishing} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" />清空</Button>
-							<Button variant="outline" size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button>
-							<Button size="sm" disabled={publishing || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
+							<Button variant="ghost" size="sm" disabled={publishing || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" />清空</Button>
+							<Button variant="outline" size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button>
+							<Button size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
 						</div>
 					</div>
 					<div className=" flex flex-wrap items-center gap-1">
@@ -1033,22 +1079,24 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 							{ label: "无序列表", icon: List, action: () => insertFormatting("- ", "", "列表项") },
 							{ label: "链接", icon: Link2, action: () => insertFormatting("[", "](https://)", "链接文字") },
 							{ label: "行内代码", icon: Code2, action: () => insertFormatting("`", "`", "代码") },
-						].map((tool) => <button key={tool.label} type="button" title={tool.label} aria-label={tool.label} onMouseDown={(event) => event.preventDefault()} onClick={tool.action} className="focus-red flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-500"><tool.icon className="h-4 w-4" /></button>)}
+						].map((tool) => <button key={tool.label} disabled={!isLoggedIn} type="button" title={tool.label} aria-label={tool.label} onMouseDown={(event) => event.preventDefault()} onClick={tool.action} className="focus-red flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"><tool.icon className="h-4 w-4" /></button>)}
 						<span className="ml-auto text-[10px] text-muted-foreground">可将下方素材拖入正文</span>
 					</div>
 				</div>
 				<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 					<input
+						disabled={!isLoggedIn}
 						value={draftTitle}
 						onChange={(event) => setDraftTitle(event.target.value)}
-						placeholder="输入文章标题"
-						className="h-14 w-full shrink-0 bg-transparent px-4 text-xl font-bold outline-none placeholder:text-muted-foreground/40"
+						placeholder={isLoggedIn ? "输入文章标题" : "登录后开始写作"}
+						className="h-14 w-full shrink-0 bg-transparent px-4 text-xl font-bold outline-none placeholder:text-muted-foreground/40 disabled:cursor-not-allowed disabled:bg-muted/25"
 					/>
 					<InlineArticleEditor
 						content={draftContent}
 						onChange={setDraftContent}
 						editorRef={draftEditorRef}
 						fillHeight
+						disabled={!isLoggedIn}
 					/>
 				</div>
 			</section>
@@ -1064,6 +1112,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						<div className="px-4 pt-4.5 pb-1">
 							<Button
 								onClick={handleNewChat}
+								disabled={!isLoggedIn}
 								className="cursor-pointer h-10 w-full gap-2 rounded-lg border-2 border-red-500/75 bg-red-50/50 text-foreground hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/35"
 
 							>
@@ -1073,7 +1122,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						</div>
 
 						<nav className="scrollBar-hidden flex-1 overflow-y-auto px-2 pt-1 space-y-0.5">
-							{loadingChats ? (
+							{!isLoggedIn ? (
+								<div className="px-3 py-8 text-center text-sm font-medium text-muted-foreground">登录后查看</div>
+							) : loadingChats ? (
 								<div className="text-center text-sm text-muted-foreground py-8">加载中...</div>
 							) : chats.length === 0 ? (
 								<div className="text-center text-sm text-muted-foreground py-8">暂无历史记录</div>

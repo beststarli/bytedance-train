@@ -16,6 +16,7 @@ import {
     ChevronDown,
     Plus,
     Link,
+    ShieldCheck,
 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -29,7 +30,7 @@ import { useAuthStore } from '@/store/userStore'
 import { api, logoutSession } from '@/api/api'
 import { resolveAssetUrl } from '@/lib/asset-url'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import ThemeToggle from '@/components/theme-toggle'
+import ThemeToggle from '@/components/header/theme-toggle'
 
 interface SearchItem {
     id: string
@@ -83,19 +84,39 @@ export default function Header({
     const hasSearchResults = results.works.length + results.materials.length + results.prompts.length > 0
 
     useEffect(() => {
+        setQuery('')
+        setSearchFocused(false)
+        setSearching(false)
+        setResults({ works: [], materials: [], prompts: [] })
+    }, [user?.id])
+
+    useEffect(() => {
+        let cancelled = false
+        let loading = false
+        setNotifications([])
         if (!user) {
-            setNotifications([])
             setLastReadAt('')
             return
         }
         setLastReadAt(localStorage.getItem(`creator-notifications-read:${user.id}`) || '')
-        const load = () => api<{ notifications: Notification[] }>('/api/content/notifications')
-            .then((data) => setNotifications(data.notifications))
-            .catch(() => setNotifications([]))
+        const load = () => {
+            if (document.visibilityState !== 'visible' || loading) return
+            loading = true
+            api<{ notifications: Notification[] }>('/api/content/notifications')
+                .then((data) => { if (!cancelled) setNotifications(data.notifications) })
+                .catch(() => { if (!cancelled) setNotifications([]) })
+                .finally(() => { loading = false })
+        }
         void load()
         const timer = window.setInterval(load, 30_000)
-        return () => window.clearInterval(timer)
-    }, [user])
+        const handleVisibility = () => { if (document.visibilityState === 'visible') void load() }
+        document.addEventListener('visibilitychange', handleVisibility)
+        return () => {
+            cancelled = true
+            window.clearInterval(timer)
+            document.removeEventListener('visibilitychange', handleVisibility)
+        }
+    }, [user?.id])
 
     useEffect(() => {
         const keyword = query.trim()
@@ -133,7 +154,7 @@ export default function Header({
 
     const chooseSearchResult = (type: 'work' | 'material' | 'prompt') => {
         setSearchFocused(false)
-        if (type === 'work') onNavigate?.('dashboard')
+        if (type === 'work') onNavigate?.('content')
         else if (type === 'material') onNavigate?.('materials')
         else onNavigate?.('prompts')
     }
@@ -194,6 +215,14 @@ export default function Header({
                 <a href="https://www.toutiao.com" target="_blank" rel="noopener noreferrer" className="hidden rounded-lg text-muted-foreground  sm:inline-flex items-center justify-center w-8 h-8 hover:bg-accent transition-colors hover:text-red-500">
                     <Link className="w-4 h-4 " />
                 </a>
+                <div className="group relative hidden sm:block">
+                    <Button aria-describedby="filing-tooltip" variant="ghost" size="icon" className="cursor-pointer rounded-lg text-muted-foreground hover:text-red-500">
+                        <ShieldCheck className="h-5 w-5" />
+                    </Button>
+                    <div id="filing-tooltip" role="tooltip" className="pointer-events-none absolute right-0 top-11 z-50 w-max max-w-64 translate-y-1 rounded-md border bg-popover px-3 py-2 text-[11px] text-popover-foreground opacity-0 shadow-md transition-all group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100">
+                        ICP 备案信息：待申请（信息位置预留）
+                    </div>
+                </div>
                 <Button variant="ghost" size="icon" onClick={() => setHelpOpen(true)} className="hidden cursor-pointer rounded-lg text-muted-foreground hover:text-foreground sm:inline-flex">
                     <HelpCircle className="w-5 h-5" />
                 </Button>

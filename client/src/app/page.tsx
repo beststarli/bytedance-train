@@ -1,51 +1,52 @@
 "use client"
 
 import { useEffect, useState } from "react";
-import Header from "@/components/header";
-import Login from "@/components/login";
-import Sidebar from "@/components/sidebar";
-import CreatePage from "@/components/createPage/createPage";
-import MainPage from "@/components/ideaPage/mainPage";
+import Sidebar from "@/components/sidebar/sidebar";
+import Login from "@/components/header/login";
+import WorksPage from "@/components/worksPage/worksPage";
+import Header from "@/components/header/header";
+import ReviewPage from "@/components/reviewPage/reviewPage";
+import MainPage from "@/components/mainPage/mainPage";
 import UserPage from "@/components/userPage/userPage";
-import WorksPage from "@/components/worksPage";
+import CreatePage from "@/components/createPage/createPage";
 import PromptsPage from "@/components/promptPage/promptsPage";
-import MaterialsPage from "@/components/materialsPage";
-import ReviewPage from "@/components/reviewPage";
-import { useAuthStore } from "@/store/userStore";
-import { restoreSession } from "@/api/api";
-import TaskProgress from "@/components/taskProgress";
+import MaterialsPage from "@/components/materialsPage/materialsPage";
 import { Toaster } from "sonner";
+import { refreshAccessToken } from "@/api/api";
+import { useAuthStore } from "@/store/userStore";
+import TaskProgress from "@/components/taskProgress";
 
 export default function Home() {
-	const [activeMenu, setActiveMenu] = useState("dashboard")
+	const [activeMenu, setActiveMenu] = useState("content")
 	const [showLogin, setShowLogin] = useState(false)
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 	const [homeRefreshKey, setHomeRefreshKey] = useState(0)
 	const user = useAuthStore((state) => state.user)
 
 	useEffect(() => {
-		void restoreSession()
+		void refreshAccessToken()
 	}, [])
 
 	const renderContent = () => {
 		const [menu, subview] = activeMenu.split(":")
+		const privatePageKey = user?.id || "guest"
 		switch (menu) {
 			case "create":
-				return <CreatePage initialMode={subview === "manual" || subview === "ai" ? subview : undefined} onNavigate={setActiveMenu} />
-			case "dashboard":
+				return <CreatePage key={`create-${privatePageKey}`} initialMode={subview === "manual" || subview === "ai" ? subview : undefined} onNavigate={setActiveMenu} />
+			case "content":
 				return <MainPage key={homeRefreshKey} onNavigate={setActiveMenu} />
 			case "inspiration":
 				return <MainPage onNavigate={setActiveMenu} mode="inspiration" />
 			case "works":
-				return <WorksPage onNavigate={setActiveMenu} />
+				return <WorksPage key={`works-${privatePageKey}`} onNavigate={setActiveMenu} />
 			case "prompts":
-				return <PromptsPage />
+				return <PromptsPage key={`prompts-${privatePageKey}`} />
 			case "materials":
-				return <MaterialsPage />
+				return <MaterialsPage key={`materials-${privatePageKey}`} />
 			case "review":
-				return <ReviewPage />
+				return <ReviewPage key={`review-${privatePageKey}`} />
 			case "userPage":
-				return <UserPage onNavigate={setActiveMenu} />
+				return <UserPage key={`profile-${privatePageKey}`} onNavigate={setActiveMenu} onLoginClick={() => setShowLogin(true)} />
 			default:
 				return (
 					<div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -67,7 +68,7 @@ export default function Home() {
 				collapsed={sidebarCollapsed}
 				onCollapsedChange={setSidebarCollapsed}
 				onHomeRefresh={() => {
-					setActiveMenu("dashboard")
+					setActiveMenu("content")
 					setHomeRefreshKey((key) => key + 1)
 				}}
 			/>
@@ -76,6 +77,7 @@ export default function Home() {
 			<div className={`flex h-dvh min-h-0 flex-col overflow-hidden pb-16 transition-[margin] duration-200 lg:pb-0 ${sidebarCollapsed ? "lg:ml-14" : "lg:ml-60"}`}>
 				{/* 固定头部 */}
 				<Header
+					key={`header-${user?.id || "guest"}`}
 					onLoginClick={() => setShowLogin(true)}
 					isLoggedIn={!!user}
 					onNavigate={setActiveMenu}
@@ -89,7 +91,9 @@ export default function Home() {
 
 			{/* 登录弹窗 */}
 			<Login open={showLogin} onOpenChange={setShowLogin} />
+			{/* 任务进度 */}
 			<TaskProgress />
+			{/* 提示通知 */}
 			<Toaster richColors position="top-center" />
 		</div>
 	);

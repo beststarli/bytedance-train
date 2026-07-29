@@ -24,7 +24,7 @@ interface SidebarProps {
 }
 
 const menuItems = [
-    { id: "dashboard", label: "首页", icon: Home },
+    { id: "content", label: "首页", icon: Home },
     { id: "create", label: "创作中心", icon: PencilLineIcon },
     { id: "works", label: "作品管理", icon: FileText },
     { id: "materials", label: "素材库", icon: FolderOpen },
@@ -82,7 +82,7 @@ export default function Sidebar({ activeMenu, onMenuChange, collapsed, onCollaps
                                     <button
                                         type="button"
                                         title={collapsed ? item.label : undefined}
-                                        onClick={() => item.id === "dashboard" ? onHomeRefresh() : onMenuChange(item.id)}
+                                        onClick={() => item.id === "content" ? onHomeRefresh() : onMenuChange(item.id)}
                                         className={cn(
                                             "focus-red group flex w-full items-center rounded-lg py-2.5 text-sm transition-all cursor-pointer",
                                             collapsed ? "mx-auto h-10 w-10 justify-center p-0" : "gap-3 px-3",
@@ -94,7 +94,7 @@ export default function Sidebar({ activeMenu, onMenuChange, collapsed, onCollaps
                                         <item.icon className={cn("w-[18px] h-[18px]", activeRootMenu === item.id && "text-red-500")} />
                                         {!collapsed && <span>{item.label}</span>}
                                     </button>
-                                    {item.id === "dashboard" && !collapsed && activeRootMenu === "dashboard" && (
+                                    {item.id === "content" && !collapsed && activeRootMenu === "content" && (
                                         <button
                                             type="button"
                                             aria-label="刷新首页文章"

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 import type { User } from '@/api/api'
+import { useEditorStore } from '@/store/editorStore'
 
 interface AuthStore {
     user: User | null
@@ -10,18 +10,16 @@ interface AuthStore {
     logout: () => void
 }
 
-export const useAuthStore = create<AuthStore>()(
-    persist(
-        (set) => ({
-            user: null,
-            token: null,
-            setAuth: (user, token) => set({ user, token }),
-            setToken: (token) => set({ token }),
-            logout: () => set({ user: null, token: null }),
-        }),
-        {
-            name: 'auth-storage',
-            partialize: (state) => ({ user: state.user }),
-        }
-    )
-)
+export const useAuthStore = create<AuthStore>()((set) => ({
+    user: null,
+    token: null,
+    setAuth: (user, token) => set((state) => {
+        if (state.user?.id !== user.id) useEditorStore.getState().clear()
+        return { user, token }
+    }),
+    setToken: (token) => set({ token }),
+    logout: () => {
+        useEditorStore.getState().clear()
+        set({ user: null, token: null })
+    },
+}))

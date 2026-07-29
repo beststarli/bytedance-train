@@ -2,8 +2,13 @@
 
 import { useEffect, useState } from "react"
 import { Check, LoaderCircle, XCircle } from "lucide-react"
+import { useAuthStore } from "@/store/userStore"
 
-type TaskState = { title: string; status: "running" | "success" | "error"; message?: string }
+type TaskState = {
+  title: string;
+  status: "running" | "success" | "error";
+  message?: string
+}
 
 export const TASK_PROGRESS_EVENT = "creator-task-progress"
 
@@ -13,6 +18,11 @@ export function emitTaskProgress(detail: TaskState) {
 
 export default function TaskProgress() {
   const [task, setTask] = useState<TaskState | null>(null)
+  const userId = useAuthStore((state) => state.user?.id)
+
+  useEffect(() => {
+    setTask(null)
+  }, [userId])
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -32,7 +42,7 @@ export default function TaskProgress() {
   if (!task) return null
 
   return (
-    <div className="fixed right-5 top-20 z-[100] flex min-w-72 items-center gap-3 rounded-lg border bg-card px-4 py-3 shadow-lg">
+    <div className="fixed right-5 top-20 z-100 flex min-w-72 items-center gap-3 rounded-lg border bg-card px-4 py-3 shadow-lg">
       {task.status === "running" && <LoaderCircle className="h-5 w-5 animate-spin text-red-500" />}
       {task.status === "success" && <Check className="h-5 w-5 text-emerald-600" />}
       {task.status === "error" && <XCircle className="h-5 w-5 text-red-500" />}
