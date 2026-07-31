@@ -73,7 +73,7 @@
   INSERT INTO prompts (title, description, content, category, icon) VALUES
     ('撰写文章', '快速生成一篇结构完整的文章', '请帮我撰写一篇关于{主题}的文章，要求结构完整、内容详实', 'writing', 'FileText'),
     ('生成图片', '根据描述生成配图', '根据以下描述生成一张图片：{描述}。风格要求：{风格}。', 'image', 'ImageIcon'),
-    ('视频脚本', '生成短视频拍摄脚本', '请为以下主题生成一个短视频脚本：{主题}', 'video', 'VideoIcon'),
+    ('局部重绘', '按要求修改参考图片', '请基于参考图片修改以下内容：{修改要求}。必须保留：{保留内容}。目标风格：{目标风格}。', 'image_edit', 'WandSparkles'),
     ('内容优化', '优化已有文本内容', '请优化以下文本：{内容}', 'optimize', 'Sparkles');
 
   -- 已发布作品
@@ -102,3 +102,115 @@
   );
   CREATE UNIQUE INDEX idx_materials_user_source_unique
     ON materials (user_id, source_url) WHERE source_url IS NOT NULL;
+
+  -- 作品不可变版本：审核失败时保留线上版本，修改稿通过后再原子替换。
+  CREATE TABLE work_versions (
+      id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      work_id           UUID NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+      parent_version_id UUID REFERENCES work_versions(id) ON DELETE SET NULL,
+      version_number    INTEGER NOT NULL,
+      title             VARCHAR(200) NOT NULL,
+      content           TEXT NOT NULL,
+      source            VARCHAR(20) NOT NULL DEFAULT 'user',
+      status            VARCHAR(24) NOT NULL DEFAULT 'draft',
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (work_id, version_number)
+  );
+
+  ALTER TABLE works ADD COLUMN review_status VARCHAR(24) NOT NULL DEFAULT 'none';
+  ALTER TABLE works ADD COLUMN latest_version_id UUID;
+  ALTER TABLE works ADD COLUMN published_version_id UUID;
+
+  -- Agent 运行、步骤与事件轨迹，供内容生成、提示词生成、审核和改写共用。
+  CREATE TABLE agent_runs (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      task_type     VARCHAR(40) NOT NULL,
+      status        VARCHAR(24) NOT NULL DEFAULT 'queued',
+      current_step  VARCHAR(80),
+      input         JSONB NOT NULL DEFAULT '{}'::jsonb,
+      output        JSONB,
+      error         TEXT,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at  TIMESTAMPTZ
+  );
+
+  CREATE TABLE agent_steps (
+      id            BIGSERIAL PRIMARY KEY,
+      run_id        UUID NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+      step_name     VARCHAR(80) NOT NULL,
+      status        VARCHAR(24) NOT NULL,
+      input         JSONB,
+      output        JSONB,
+      error         TEXT,
+      started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at  TIMESTAMPTZ
+  );
+
+  CREATE TABLE agent_events (
+      id          BIGSERIAL PRIMARY KEY,
+      run_id      UUID NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+      event_type  VARCHAR(50) NOT NULL,
+      payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE TABLE review_jobs (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      work_id         UUID NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+      work_version_id UUID NOT NULL REFERENCES work_versions(id) ON DELETE CASCADE,
+      user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      agent_run_id    UUID REFERENCES agent_runs(id) ON DELETE SET NULL,
+      status          VARCHAR(24) NOT NULL DEFAULT 'queued',
+      decision        VARCHAR(24),
+      risk_score      DECIMAL(5,2),
+      quality_score   DECIMAL(5,2),
+      summary         TEXT,
+      model_version   VARCHAR(120),
+      raw_result      JSONB,
+      error           TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_at      TIMESTAMPTZ,
+      completed_at    TIMESTAMPTZ
+  );
+
+  CREATE TABLE review_findings (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      review_job_id  UUID NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
+      category       VARCHAR(50) NOT NULL,
+      severity       VARCHAR(20) NOT NULL,
+      confidence     DECIMAL(5,4) NOT NULL DEFAULT 0,
+      excerpt        TEXT,
+      reason         TEXT NOT NULL,
+      suggestion     TEXT,
+      replacement    TEXT,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE TABLE rewrite_proposals (
+      id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      review_job_id       UUID NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
+      finding_id          UUID REFERENCES review_findings(id) ON DELETE CASCADE,
+      work_version_id     UUID NOT NULL REFERENCES work_versions(id) ON DELETE CASCADE,
+      agent_run_id        UUID REFERENCES agent_runs(id) ON DELETE SET NULL,
+      original_content    TEXT NOT NULL,
+      replacement_content TEXT NOT NULL,
+      reason              TEXT,
+      status              VARCHAR(20) NOT NULL DEFAULT 'pending',
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_at          TIMESTAMPTZ
+  );
+
+  -- 第一阶段审核知识库。后续可在保持 Tool 接口不变的情况下换成 pgvector 混合检索。
+  CREATE TABLE review_policies (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      code        VARCHAR(80) UNIQUE NOT NULL,
+      category    VARCHAR(50) NOT NULL,
+      title       VARCHAR(200) NOT NULL,
+      content     TEXT NOT NULL,
+      severity    VARCHAR(20) NOT NULL DEFAULT 'medium',
+      keywords    TEXT[] NOT NULL DEFAULT '{}',
+      is_active   BOOLEAN NOT NULL DEFAULT true,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );

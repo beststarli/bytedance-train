@@ -285,7 +285,7 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 							<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 								{[
 									{ title: "作品管理", desc: "查看、编辑与管理已发布作品", icon: FileText, tone: "bg-red-50 text-red-500", target: "works" },
-									{ title: "素材管理", desc: "整理图片、视频与创作参考", icon: FolderOpen, tone: "bg-blue-50 text-blue-600", target: "materials" },
+									{ title: "素材管理", desc: "整理图片与视觉创作参考", icon: FolderOpen, tone: "bg-blue-50 text-blue-600", target: "materials" },
 									{ title: "审核作品", desc: "检查作品状态与内容安全结果", icon: ShieldCheck, tone: "bg-emerald-50 text-emerald-600", target: "review" },
 									{ title: "创作文章", desc: "进入 AI 协作与内容写作台", icon: FilePenLine, tone: "bg-amber-50 text-amber-600", target: "create" },
 								].map((item) => (

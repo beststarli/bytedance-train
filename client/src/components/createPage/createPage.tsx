@@ -9,7 +9,6 @@ import {
 	Sparkles,
 	FileText,
 	ImageIcon,
-	Video,
 	Pencil,
 	PenLine,
 	WandSparkles,
@@ -25,6 +24,13 @@ import {
 	Code2,
 	FolderPlus,
 	Loader2,
+	Square,
+	RotateCcw,
+	Upload,
+	X,
+	Check,
+	CopyPlus,
+	Paperclip,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/userStore'
 import { api, getValidAccessToken } from '@/api/api'
@@ -68,15 +74,40 @@ interface Material {
 	source_url?: string | null
 }
 
+interface ImageAttachment {
+	id: string
+	url: string
+	filename: string
+	source: 'generated' | 'material' | 'upload'
+}
+
+interface FloatingSelection {
+	text: string
+	x: number
+	y: number
+	source: 'assistant' | 'editor'
+}
+
+interface BrowserSpeechRecognition {
+	continuous: boolean
+	interimResults: boolean
+	lang: string
+	start: () => void
+	stop: () => void
+	onresult: ((event: { resultIndex: number; results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> }) => void) | null
+	onerror: (() => void) | null
+	onend: (() => void) | null
+}
+
 const iconMap: Record<string, React.ElementType> = {
-	FileText, ImageIcon, Video, Sparkles,
+	FileText, ImageIcon, WandSparkles, Sparkles,
 }
 
 const promptCategoryMeta: Record<string, { title: string; description: string; icon: React.ElementType }> = {
 	writing: { title: '文章写作', description: '标题、结构与正文创作', icon: FileText },
 	article: { title: '文章创作', description: '标题、结构与正文创作', icon: FileText },
 	image: { title: '图片生成', description: '配图描述与视觉灵感', icon: ImageIcon },
-	video: { title: '视频创作', description: '文本生成短视频画面', icon: Video },
+	image_edit: { title: '图片修改', description: '基于参考图调整画面', icon: WandSparkles },
 	optimize: { title: '内容优化', description: '润色、改写与观点整理', icon: Sparkles },
 	general: { title: '通用优化', description: '润色、改写与观点整理', icon: Sparkles },
 }
@@ -84,7 +115,7 @@ const promptCategoryMeta: Record<string, { title: string; description: string; i
 const promptCategoryDefinitions = [
 	{ id: 'writing', aliases: ['writing', 'article'], ...promptCategoryMeta.writing },
 	{ id: 'image', aliases: ['image'], ...promptCategoryMeta.image },
-	{ id: 'video', aliases: ['video'], ...promptCategoryMeta.video },
+	{ id: 'image_edit', aliases: ['image_edit'], ...promptCategoryMeta.image_edit },
 	{ id: 'optimize', aliases: ['optimize', 'general'], ...promptCategoryMeta.optimize },
 ]
 
@@ -111,6 +142,7 @@ function GeneratedImageFigure({
 	alt,
 	onImportImage,
 	onInsertImage,
+	onReferenceImage,
 	importing,
 	imported,
 }: {
@@ -118,6 +150,7 @@ function GeneratedImageFigure({
 	alt: string
 	onImportImage?: (url: string) => void
 	onInsertImage?: (url: string) => void
+	onReferenceImage?: (url: string, alt: string) => void
 	importing?: boolean
 	imported?: boolean
 }) {
@@ -143,8 +176,18 @@ function GeneratedImageFigure({
 				onError={() => setLoaded(true)}
 				className={cn('h-full w-full object-contain transition-opacity duration-300', loaded ? 'opacity-100' : 'opacity-0')}
 			/>
-			{loaded && (onInsertImage || onImportImage) && (
+			{loaded && (onInsertImage || onImportImage || onReferenceImage) && (
 				<div className="absolute bottom-3 right-3 flex items-center gap-2">
+					{onReferenceImage && (
+						<button
+							type="button"
+							onClick={() => onReferenceImage(imageUrl, alt)}
+							className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-white/20 bg-slate-950/90 px-3 py-2 text-xs font-semibold text-white shadow-lg backdrop-blur transition hover:border-red-400 hover:bg-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+						>
+							<Paperclip className="h-3.5 w-3.5" />
+							引用修改
+						</button>
+					)}
 					{onInsertImage && (
 						<button
 							type="button"
@@ -172,32 +215,22 @@ function GeneratedImageFigure({
 	)
 }
 
-function GeneratedVideoFigure({ videoUrl }: { videoUrl: string }) {
-	return (
-		<figure className="my-2 w-[min(640px,72vw)] max-w-full overflow-hidden rounded-xl border bg-black shadow-sm">
-			<video src={resolveAssetUrl(videoUrl)} controls preload="metadata" playsInline className="aspect-video w-full bg-black object-contain">
-				当前浏览器不支持视频播放。
-			</video>
-		</figure>
-	)
-}
-
 function MarkdownContent({
 	content,
 	onImportImage,
 	onInsertImage,
+	onReferenceImage,
 	importingUrls,
 	importedUrls,
 }: {
 	content: string
 	onImportImage?: (url: string) => void
 	onInsertImage?: (url: string) => void
+	onReferenceImage?: (url: string, alt: string) => void
 	importingUrls?: Set<string>
 	importedUrls?: Set<string>
 }) {
 	return <div className="space-y-2">{content.split('\n').map((line, index) => {
-		const video = line.trim().match(/^\[AI 生成视频\]\(([^)]+)\)$/)
-		if (video) return <GeneratedVideoFigure key={index} videoUrl={video[1]} />
 		const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 		const legacyImage = line.trim().match(/^(https?:\/\/\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?)$/i)
 		const imageUrl = image?.[2] || legacyImage?.[1]
@@ -209,6 +242,7 @@ function MarkdownContent({
 					alt={image?.[1] || 'AI 生成图片'}
 					onImportImage={onImportImage}
 					onInsertImage={onInsertImage}
+					onReferenceImage={onReferenceImage}
 					importing={importingUrls?.has(imageUrl)}
 					imported={importedUrls?.has(imageUrl)}
 				/>
@@ -252,11 +286,6 @@ function renderEditorInline(value: string) {
 function markdownToEditorHtml(content: string) {
 	if (!content) return ''
 	return content.split('\n').map((line) => {
-		const video = line.trim().match(/^\[(?:AI 生成视频|视频(?::([^\]]*))?)\]\(([^)]+)\)$/)
-		if (video) {
-			const label = video[1] || 'AI 生成视频'
-			return `<figure contenteditable="false" data-video-node="true" data-video-label="${escapeHtml(label)}" data-video-url="${escapeHtml(video[2])}"><video src="${escapeHtml(resolveAssetUrl(video[2]))}" controls preload="metadata" playsinline></video><button type="button" data-remove-video="true" aria-label="删除视频" title="删除视频">×</button></figure>`
-		}
 		const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 		if (image) {
 			return `<figure contenteditable="false" data-image-node="true" data-image-alt="${escapeHtml(image[1])}" data-image-url="${escapeHtml(image[2])}"><img src="${escapeHtml(resolveAssetUrl(image[2]))}" alt=""><button type="button" data-remove-image="true" aria-label="删除图片" title="删除图片">×</button></figure>`
@@ -275,9 +304,6 @@ function editorInlineToMarkdown(node: Node): string {
 	if (node.dataset.imageNode === 'true') {
 		return `\n![${node.dataset.imageAlt || ''}](${node.dataset.imageUrl || ''})\n`
 	}
-	if (node.dataset.videoNode === 'true') {
-		return `\n[视频:${node.dataset.videoLabel || '视频'}](${node.dataset.videoUrl || ''})\n`
-	}
 	const content = Array.from(node.childNodes).map(editorInlineToMarkdown).join('')
 	if (node.tagName === 'STRONG' || node.tagName === 'B') return `**${content}**`
 	if (node.tagName === 'EM' || node.tagName === 'I') return `*${content}*`
@@ -292,7 +318,6 @@ function editorHtmlToMarkdown(editor: HTMLDivElement) {
 		if (node.nodeType === Node.TEXT_NODE) return node.textContent || ''
 		if (!(node instanceof HTMLElement)) return ''
 		if (node.dataset.imageNode === 'true') return `![${node.dataset.imageAlt || ''}](${node.dataset.imageUrl || ''})`
-		if (node.dataset.videoNode === 'true') return `[视频:${node.dataset.videoLabel || '视频'}](${node.dataset.videoUrl || ''})`
 		const content = editorInlineToMarkdown(node).replace(/\n+$/, '')
 		if (node.tagName === 'H1') return `# ${content}`
 		if (node.tagName === 'H2') return `## ${content}`
@@ -312,12 +337,14 @@ function InlineArticleEditor({
 	editorRef,
 	fillHeight = false,
 	disabled = false,
+	onTextSelection,
 }: {
 	content: string
 	onChange: (content: string) => void
 	editorRef: React.MutableRefObject<HTMLDivElement | null>
 	fillHeight?: boolean
 	disabled?: boolean
+	onTextSelection?: (selection: FloatingSelection | null) => void
 }) {
 	const lastContentRef = useRef(content)
 
@@ -344,10 +371,8 @@ function InlineArticleEditor({
 		if (!raw || !editorRef.current) return
 		try {
 			const material = JSON.parse(raw) as Material
-			if (material.type !== 'image' && material.type !== 'video') return
-			const markdown = material.type === 'video'
-				? `[视频:${material.filename}](${material.url})`
-				: `![${material.filename}](${material.url})`
+			if (material.type !== 'image') return
+			const markdown = `![${material.filename}](${material.url})`
 			const holder = document.createElement('div')
 			holder.innerHTML = markdownToEditorHtml(markdown)
 			const materialNode = holder.firstElementChild
@@ -389,12 +414,24 @@ function InlineArticleEditor({
 				disabled && "cursor-not-allowed bg-muted/25 text-muted-foreground",
 			)}
 			onInput={() => { if (!disabled) syncContent() }}
+			onMouseUp={() => {
+				if (disabled || !onTextSelection) return
+				const selection = window.getSelection()
+				if (!selection || selection.isCollapsed || !selection.rangeCount || !editorRef.current?.contains(selection.anchorNode)) {
+					onTextSelection(null)
+					return
+				}
+				const text = selection.toString().trim()
+				if (!text) return onTextSelection(null)
+				const rect = selection.getRangeAt(0).getBoundingClientRect()
+				onTextSelection({ text, x: rect.left + rect.width / 2, y: rect.top - 10, source: 'editor' })
+			}}
 			onClick={(event) => {
 				if (disabled) return
 				const target = event.target as HTMLElement
-				const removeButton = target.closest('[data-remove-image="true"], [data-remove-video="true"]')
+				const removeButton = target.closest('[data-remove-image="true"]')
 				if (!removeButton) return
-				removeButton.closest('[data-image-node="true"], [data-video-node="true"]')?.remove()
+				removeButton.closest('[data-image-node="true"]')?.remove()
 				syncContent()
 			}}
 			onDragOver={(event) => {
@@ -412,7 +449,7 @@ function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInser
 		<section className="shrink-0 bg-card px-4 py-3">
 			<div className="mb-2 flex items-center justify-between">
 				<div className="flex items-center gap-2 text-xs font-semibold"><FolderOpen className="h-3.5 w-3.5 text-red-500" />素材库</div>
-				<span className="text-[10px] text-muted-foreground">拖拽图片或视频到右侧正文，点击也可快速插入</span>
+				<span className="text-[10px] text-muted-foreground">拖到输入框作为 AI 参考，拖到写作台插入正文；点击可快速插入正文</span>
 			</div>
 			<div className="flex min-h-20 gap-3 overflow-x-auto pb-1">
 				{materials.length ? materials.map((material) => (
@@ -420,9 +457,9 @@ function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInser
 						key={material.id}
 						type="button"
 						onClick={() => onInsert(material)}
-						disabled={material.type !== 'image' && material.type !== 'video'}
+						disabled={material.type !== 'image'}
 						title={`插入 ${material.filename}`}
-						draggable={material.type === 'image' || material.type === 'video'}
+						draggable={material.type === 'image'}
 						onDragStart={(event) => {
 							event.dataTransfer.setData('application/x-creator-material', JSON.stringify(material))
 							event.dataTransfer.effectAllowed = 'copy'
@@ -431,9 +468,7 @@ function MaterialShelf({ materials, onInsert }: { materials: Material[]; onInser
 					>
 						{material.type === 'image'
 							? <img src={material.url} alt={material.filename} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
-							: material.type === 'video'
-								? <span className="relative flex h-full w-full items-center justify-center bg-black"><video src={resolveAssetUrl(material.url)} muted preload="metadata" className="pointer-events-none h-full w-full object-cover" /><span className="absolute flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white"><Video className="h-4 w-4" /></span></span>
-								: <span className="flex h-full items-center justify-center text-[10px] text-muted-foreground">其他素材</span>}
+							: <span className="flex h-full items-center justify-center text-[10px] text-muted-foreground">仅支持图片</span>}
 					</button>
 				)) : <div className="flex h-20 items-center text-xs text-muted-foreground">素材库暂无内容，可前往侧栏“素材库”上传。</div>}
 			</div>
@@ -459,18 +494,31 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const [loadingChats, setLoadingChats] = useState(true)
 	const [sending, setSending] = useState(false)
 	const [thinkingStage, setThinkingStage] = useState("")
-	const [activeGenerationType, setActiveGenerationType] = useState<'text' | 'image' | 'video'>('text')
+	const [activeGenerationType, setActiveGenerationType] = useState<'text' | 'image'>('text')
 	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>('ai')
 	const { id: editingWorkId, title: draftTitle, content: draftContent, setTitle: setDraftTitle, setContent: setDraftContent, markSaved, clear: clearEditor } = useEditorStore()
 	const [publishing, setPublishing] = useState(false)
 	const [showClearEditorDialog, setShowClearEditorDialog] = useState(false)
 	const [clearingEditor, setClearingEditor] = useState(false)
 	const [deleteChatTarget, setDeleteChatTarget] = useState<Chat | null>(null)
+	const [renamingChat, setRenamingChat] = useState<Chat | null>(null)
+	const [renameValue, setRenameValue] = useState('')
 	const [selectedPromptCategory, setSelectedPromptCategory] = useState<string | null>(null)
+	const [attachments, setAttachments] = useState<ImageAttachment[]>([])
+	const [composerDragActive, setComposerDragActive] = useState(false)
+	const [uploadingAttachment, setUploadingAttachment] = useState(false)
+	const [listening, setListening] = useState(false)
+	const [floatingSelection, setFloatingSelection] = useState<FloatingSelection | null>(null)
+	const [interruptedMessageId, setInterruptedMessageId] = useState<string | null>(null)
 	const messagesEndRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
+	const attachmentInputRef = useRef<HTMLInputElement>(null)
 	const draftEditorRef = useRef<HTMLDivElement>(null)
 	const streamingChatIdRef = useRef<string | null>(null)
+	const streamAbortRef = useRef<AbortController | null>(null)
+	const currentUserMessageIdRef = useRef<string | null>(null)
+	const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null)
+	const composingRef = useRef(false)
 	const requestCounter = useRef(0)
 	const promptCategories = promptCategoryDefinitions
 	const importedImageUrls = useMemo(
@@ -490,7 +538,11 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setInputValue('')
 		setModelType(undefined)
 		setSelectedPromptCategory(null)
-		setDeleteChatTarget(null)
+			setDeleteChatTarget(null)
+			setRenamingChat(null)
+			setAttachments([])
+			setFloatingSelection(null)
+			setInterruptedMessageId(null)
 		setLoadingChats(!!user)
 		if (!user) return
 		Promise.all([
@@ -511,6 +563,11 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		}).finally(() => { if (!cancelled) setLoadingChats(false) })
 		return () => { cancelled = true }
 	}, [user?.id])
+
+	useEffect(() => () => {
+		streamAbortRef.current?.abort()
+		speechRecognitionRef.current?.stop()
+	}, [])
 
 	// 切换聊天时加载消息
 	useEffect(() => {
@@ -559,15 +616,186 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setDeleteChatTarget(null)
 	}, [activeChatId, deleteChatTarget])
 
-	// ===== SSE 流式发送消息（文生文 / 图 / 视频通用） =====
-	const sendStreamingMessage = useCallback(async (chatId: string, content: string): Promise<void> => {
+	const startRenameChat = useCallback((chat: Chat) => {
+		setRenamingChat(chat)
+		setRenameValue(chat.title)
+	}, [])
+
+	const saveChatRename = useCallback(async () => {
+		if (!renamingChat || !renameValue.trim()) return
+		try {
+			const { chat } = await api<{ chat: Chat }>(`/api/content/chats/${renamingChat.id}`, {
+				method: 'PATCH',
+				body: JSON.stringify({ title: renameValue.trim() }),
+			})
+			setChats((current) => current.map((item) => item.id === chat.id ? chat : item))
+			setRenamingChat(null)
+			emitTaskProgress({ title: '会话已重命名', status: 'success' })
+		} catch (error) {
+			emitTaskProgress({ title: '重命名失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
+		}
+	}, [renameValue, renamingChat])
+
+	const addAttachment = useCallback((attachment: ImageAttachment) => {
+		setAttachments((current) => current.some((item) => item.url === attachment.url)
+			? current
+			: [...current, attachment].slice(-4))
+		setModelType('image')
+		requestAnimationFrame(() => inputRef.current?.focus())
+	}, [])
+
+	const handleComposerMaterialDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+		event.preventDefault()
+		setComposerDragActive(false)
+		const raw = event.dataTransfer.getData('application/x-creator-material')
+		if (!raw) return
+		try {
+			const material = JSON.parse(raw) as Material
+			if (material.type !== 'image') {
+				emitTaskProgress({ title: 'AI 图片参考仅支持图片素材', status: 'error' })
+				return
+			}
+			addAttachment({ id: material.id, url: material.url, filename: material.filename, source: 'material' })
+		} catch {
+			emitTaskProgress({ title: '无法读取该素材', status: 'error' })
+		}
+	}, [addAttachment])
+
+	const handleLocalAttachment = useCallback(async (file?: File) => {
+		if (!file) return
+		if (!file.type.startsWith('image/')) {
+			emitTaskProgress({ title: '请选择图片文件', status: 'error' })
+			return
+		}
+		setUploadingAttachment(true)
+		try {
+			const data = await new Promise<string>((resolve, reject) => {
+				const reader = new FileReader()
+				reader.onload = () => resolve(String(reader.result || ''))
+				reader.onerror = () => reject(new Error('读取图片失败'))
+				reader.readAsDataURL(file)
+			})
+			const result = await api<{ attachment: { url: string; filename: string } }>('/api/content/ai-attachments', {
+				method: 'POST',
+				body: JSON.stringify({ filename: file.name, data }),
+			})
+			addAttachment({ id: crypto.randomUUID(), ...result.attachment, source: 'upload' })
+		} catch (error) {
+			emitTaskProgress({ title: '图片上传失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
+		} finally {
+			setUploadingAttachment(false)
+			if (attachmentInputRef.current) attachmentInputRef.current.value = ''
+		}
+	}, [addAttachment])
+
+	const toggleVoiceInput = useCallback(() => {
+		if (listening) {
+			speechRecognitionRef.current?.stop()
+			return
+		}
+		const SpeechRecognition = (window as unknown as {
+			SpeechRecognition?: new () => BrowserSpeechRecognition
+			webkitSpeechRecognition?: new () => BrowserSpeechRecognition
+		}).SpeechRecognition || (window as unknown as {
+			webkitSpeechRecognition?: new () => BrowserSpeechRecognition
+		}).webkitSpeechRecognition
+		if (!SpeechRecognition) {
+			emitTaskProgress({ title: '当前浏览器不支持语音输入', status: 'error', message: '请使用最新版 Chrome 或 Edge' })
+			return
+		}
+		const recognition = new SpeechRecognition()
+		recognition.lang = 'zh-CN'
+		recognition.continuous = true
+		recognition.interimResults = true
+		let committed = ''
+		recognition.onresult = (event) => {
+			let interim = ''
+			for (let index = event.resultIndex; index < event.results.length; index += 1) {
+				const result = event.results[index]
+				if (!result?.[0]) continue
+				if (result.isFinal) committed += result[0].transcript
+				else interim += result[0].transcript
+			}
+			setInputValue((current) => {
+				const base = current.replace(/\n?\[语音输入中：.*\]$/, '')
+				return `${base}${committed}${interim ? `\n[语音输入中：${interim}]` : ''}`
+			})
+			if (committed) committed = ''
+		}
+		recognition.onerror = () => {
+			setListening(false)
+			emitTaskProgress({ title: '语音识别中断', status: 'error', message: '请检查麦克风权限后重试' })
+		}
+		recognition.onend = () => {
+			setListening(false)
+			setInputValue((current) => current.replace(/\n?\[语音输入中：.*\]$/, ''))
+		}
+		speechRecognitionRef.current = recognition
+		setListening(true)
+		recognition.start()
+	}, [listening])
+
+	const stopGeneration = useCallback(() => {
+		if (!sending) return
+		setInterruptedMessageId(currentUserMessageIdRef.current)
+		streamAbortRef.current?.abort()
+	}, [sending])
+
+	const insertSelectedText = useCallback(() => {
+		if (!floatingSelection) return
+		if (floatingSelection.source === 'assistant') {
+			setDraftContent(`${draftContent}${draftContent.trim() ? '\n\n' : ''}${floatingSelection.text}`)
+			emitTaskProgress({ title: '选中内容已插入写作台', status: 'success' })
+		} else {
+			setInputValue((current) => `${current}${current.trim() ? '\n\n' : ''}${floatingSelection.text}`)
+			setCreationMode('ai')
+			requestAnimationFrame(() => inputRef.current?.focus())
+		}
+		window.getSelection()?.removeAllRanges()
+		setFloatingSelection(null)
+	}, [draftContent, floatingSelection, setDraftContent])
+
+	const referenceGeneratedImage = useCallback((url: string, alt: string) => {
+		addAttachment({ id: crypto.randomUUID(), url, filename: alt || 'AI 生成图片', source: 'generated' })
+		emitTaskProgress({ title: '已引用生成图片', status: 'success', message: '在输入框描述你希望修改的内容' })
+	}, [addAttachment])
+
+	const captureAssistantSelection = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+		const selection = window.getSelection()
+		const container = event.currentTarget
+		if (!selection || selection.isCollapsed || !selection.rangeCount || !container.contains(selection.anchorNode)) {
+			setFloatingSelection(null)
+			return
+		}
+		const text = selection.toString().trim()
+		if (!text) return setFloatingSelection(null)
+		const rect = selection.getRangeAt(0).getBoundingClientRect()
+		setFloatingSelection({ text, x: rect.left + rect.width / 2, y: rect.top - 10, source: 'assistant' })
+	}, [])
+
+	const handleComposerKeyDown = useCallback((
+		event: React.KeyboardEvent<HTMLTextAreaElement>,
+		send: () => void,
+	) => {
+		if (event.key !== 'Enter') return
+		event.stopPropagation()
+		if (event.nativeEvent.isComposing || composingRef.current || event.keyCode === 229) return
+		if (!event.shiftKey) {
+			event.preventDefault()
+			send()
+		}
+	}, [])
+
+	// ===== SSE 流式发送消息（文本 / 图片通用） =====
+	const sendStreamingMessage = useCallback(async (chatId: string, content: string, referencedImages: ImageAttachment[] = []): Promise<void> => {
 		if (sending || !content.trim()) return
 
 		const trimmedContent = content.trim()
-		setInputValue('')
+			setInputValue('')
+			setAttachments([])
 		setSending(true)
-		setActiveGenerationType(modelType === 'image' ? 'image' : modelType === 'video' ? 'video' : 'text')
-		setThinkingStage(modelType === 'image' ? 'AI 正在绘制图片' : modelType === 'video' ? 'AI 正在生成视频' : 'AI 正在思考')
+		setActiveGenerationType(modelType === 'image' ? 'image' : 'text')
+		setThinkingStage(modelType === 'image' ? 'AI 正在处理图片' : 'AI 正在思考')
 		streamingChatIdRef.current = chatId
 
 		const requestId = ++requestCounter.current
@@ -580,7 +808,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			content: trimmedContent,
 			created_at: new Date().toISOString(),
 		}
-		setMessages((prev) => [...prev, tempMsg])
+			setMessages((prev) => [...prev, tempMsg])
+			currentUserMessageIdRef.current = tempId
 
 		// 2. AI 占位消息
 		const aiId = 'ai-' + Date.now()
@@ -591,8 +820,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			created_at: new Date().toISOString(),
 		}])
 
-		let revealCancelled = false
-		try {
+			let revealCancelled = false
+			const abortController = new AbortController()
+			streamAbortRef.current = abortController
+			try {
 			const token = await getValidAccessToken()
 			const response = await fetch(`/api/content/chats/${chatId}/generate-stream`, {
 				method: 'POST',
@@ -600,7 +831,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					'Content-Type': 'application/json',
 					...(token ? { Authorization: `Bearer ${token}` } : {}),
 				},
-				body: JSON.stringify({ content: trimmedContent, model_type: modelType }),
+					body: JSON.stringify({ content: trimmedContent, model_type: referencedImages.length ? 'image' : modelType, attachments: referencedImages }),
+					signal: abortController.signal,
 			})
 
 			if (!response.ok) throw new Error('请求失败')
@@ -657,16 +889,18 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						switch (data.type) {
 							case 'status':
 								setThinkingStage(data.message)
-								if (data.model_type === 'text' || data.model_type === 'image' || data.model_type === 'video') {
+								if (data.model_type === 'text' || data.model_type === 'image') {
 									setActiveGenerationType(data.model_type)
 								}
 								break
-							case 'user_message':
+								case 'user_message':
 								// 用服务端返回的消息替换临时消息
-								setMessages((prev) =>
-									prev.map((m) => (m.id === tempId ? data.message : m))
-								)
-								break
+									setMessages((prev) =>
+										prev.map((m) => (m.id === tempId ? data.message : m))
+									)
+									currentUserMessageIdRef.current = data.message.id
+									setInterruptedMessageId((current) => current === tempId ? data.message.id : current)
+									break
 
 							case 'chunk':
 								setThinkingStage('AI 正在思考')
@@ -676,17 +910,6 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								break
 
 							case 'image':
-								accumulatedContent = data.content
-								displayedContent = data.content
-								setThinkingStage('')
-								setMessages((prev) =>
-									prev.map((message) =>
-										message.id === aiId ? { ...message, content: data.content } : message
-									)
-								)
-								break
-
-							case 'video':
 								accumulatedContent = data.content
 								displayedContent = data.content
 								setThinkingStage('')
@@ -736,8 +959,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			])
 			setChats(chatData.chats)
 			setMaterials(materialData.materials)
-			} catch (error) {
-				revealCancelled = true
+				} catch (error) {
+					revealCancelled = true
+					if (error instanceof DOMException && error.name === 'AbortError') {
+						setInterruptedMessageId(currentUserMessageIdRef.current)
+						setMessages((prev) => prev.map((message) =>
+							message.id === aiId
+								? { ...message, content: message.content || '已中断本次生成。' }
+								: message
+						))
+						return
+					}
 				// 保留用户输入，并将 AI 占位改为可见的失败提示
 				const failureMessage = error instanceof Error ? error.message : '生成失败，请稍后重试。'
 				setMessages((prev) =>
@@ -749,16 +981,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			)
 		} finally {
 			setSending(false)
-			setThinkingStage('')
-			streamingChatIdRef.current = null
-		}
-	}, [sending, modelType])
+				setThinkingStage('')
+				streamingChatIdRef.current = null
+				streamAbortRef.current = null
+			}
+		}, [sending, modelType])
 
 	// 发送消息（已有聊天）
 	const handleSend = useCallback(async () => {
 		if (!inputValue.trim() || !activeChatId || sending) return
-		await sendStreamingMessage(activeChatId, inputValue)
-	}, [inputValue, activeChatId, sending, sendStreamingMessage])
+			await sendStreamingMessage(activeChatId, inputValue, attachments)
+		}, [inputValue, activeChatId, sending, sendStreamingMessage, attachments])
 
 	// 新建聊天并发送消息
 	const handleCreateAndSend = useCallback(async () => {
@@ -776,15 +1009,15 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			setActiveChatId(chat.id)
 
 			// 再流式发送
-			await sendStreamingMessage(chat.id, content)
+				await sendStreamingMessage(chat.id, content, attachments)
 		} catch {
 			// 创建聊天失败不需要额外处理
 		}
-	}, [inputValue, sending, sendStreamingMessage])
+		}, [inputValue, sending, sendStreamingMessage, attachments])
 
 	const handlePromptClick = useCallback((prompt: Prompt) => {
 		setInputValue((current) => `${current}${current.trim() ? '\n\n' : ''}${prompt.content}`)
-		setModelType(prompt.category === 'image' ? 'image' : prompt.category === 'video' ? 'video' : undefined)
+		setModelType(prompt.category === 'image' || prompt.category === 'image_edit' ? 'image' : undefined)
 		setSelectedPromptCategory(null)
 		requestAnimationFrame(() => {
 			const input = inputRef.current
@@ -804,10 +1037,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [inputValue, isLoggedIn, creationMode, activeChatId])
 
 	const insertMaterial = useCallback((material: Material) => {
-		if (material.type !== 'image' && material.type !== 'video') return
-		const markdown = material.type === 'video'
-			? `[视频:${material.filename}](${material.url})`
-			: `![${material.filename}](${material.url})`
+		if (material.type !== 'image') return
+		const markdown = `![${material.filename}](${material.url})`
 		const editor = draftEditorRef.current
 		const selection = window.getSelection()
 		if (editor && selection?.rangeCount) {
@@ -925,17 +1156,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const handlePublish = async (status: 'draft' | 'published') => {
 		if (!user || !draftTitle.trim() || !draftContent.trim()) return
 		setPublishing(true)
-		emitTaskProgress({ title: status === 'published' ? '正在发布文章' : '正在保存草稿', status: 'running', message: '正在同步内容与作品数据' })
+		emitTaskProgress({ title: status === 'published' ? '正在提交 AI 审核' : '正在保存草稿', status: 'running', message: status === 'published' ? '正在创建内容版本与审核任务' : '正在同步内容与作品数据' })
 		try {
 			const data = await api<{ work: { id: string } }>(editingWorkId ? `/api/content/works/${editingWorkId}` : '/api/content/works', {
 				method: editingWorkId ? 'PUT' : 'POST',
 				body: JSON.stringify({ title: draftTitle.trim(), content: draftContent.trim(), status }),
 			})
 			markSaved(data.work.id)
-			emitTaskProgress({ title: status === 'published' ? '文章发布成功' : '草稿保存成功', status: 'success', message: '内容已同步' })
+			emitTaskProgress({ title: status === 'published' ? '已进入审核队列' : '草稿保存成功', status: 'success', message: status === 'published' ? '审核通过后文章会自动发布' : '内容已同步' })
 			if (status === 'published') {
 				clearEditor()
-				onNavigate?.('content')
+				onNavigate?.('review')
 			}
 		} catch (error) {
 			emitTaskProgress({ title: '操作失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
@@ -1038,16 +1269,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 							<div className="flex gap-2">
 								<Button variant="ghost" disabled={publishing || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" />清空写作台</Button>
 								<Button variant="outline" disabled={publishing || !isLoggedIn} onClick={() => void handlePublish('draft')}>保存草稿</Button>
-								<Button disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
+								<Button disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">提交审核</Button>
 							</div>
 						</div>
 						<div className="workspace-card overflow-hidden">
 							<input disabled={!isLoggedIn} value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} placeholder={isLoggedIn ? "输入文章标题" : "登录后开始写作"} className="w-full border-b bg-transparent px-7 py-6 text-2xl font-bold outline-none placeholder:text-muted-foreground/40 disabled:cursor-not-allowed disabled:bg-muted/25" />
-							<InlineArticleEditor
+								<InlineArticleEditor
 								content={draftContent}
 								onChange={setDraftContent}
 								editorRef={draftEditorRef}
-								disabled={!isLoggedIn}
+									disabled={!isLoggedIn}
+									onTextSelection={setFloatingSelection}
 							/>
 						</div>
 					</div>
@@ -1066,7 +1298,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						<div className="flex gap-2">
 							<Button variant="ghost" size="sm" disabled={publishing || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" />清空</Button>
 							<Button variant="outline" size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button>
-							<Button size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">发布文章</Button>
+							<Button size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">提交审核</Button>
 						</div>
 					</div>
 					<div className=" flex flex-wrap items-center gap-1">
@@ -1091,12 +1323,13 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						placeholder={isLoggedIn ? "输入文章标题" : "登录后开始写作"}
 						className="h-14 w-full shrink-0 bg-transparent px-4 text-xl font-bold outline-none placeholder:text-muted-foreground/40 disabled:cursor-not-allowed disabled:bg-muted/25"
 					/>
-					<InlineArticleEditor
+						<InlineArticleEditor
 						content={draftContent}
 						onChange={setDraftContent}
 						editorRef={draftEditorRef}
 						fillHeight
-						disabled={!isLoggedIn}
+							disabled={!isLoggedIn}
+							onTextSelection={setFloatingSelection}
 					/>
 				</div>
 			</section>
@@ -1152,11 +1385,22 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 										<span className="flex-1 truncate">{chat.title}</span>
 										<button
 											type="button"
+											title="重命名会话"
+											onClick={(event) => {
+												event.stopPropagation()
+												startRenameChat(chat)
+											}}
+											className="shrink-0 cursor-pointer opacity-0 transition-all hover:text-red-500 group-hover:opacity-100"
+										>
+											<Pencil className="h-3.5 w-3.5" />
+										</button>
+										<button
+											type="button"
 											onClick={(event) => {
 												event.stopPropagation()
 												setDeleteChatTarget(chat)
 											}}
-											className="shrink-0 opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all"
+											className="shrink-0 cursor-pointer opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all"
 										>
 											<Trash2 className="w-3.5 h-3.5" />
 										</button>
@@ -1205,9 +1449,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 													</div>
 												)}
 												<div
+													onMouseUp={msg.role === 'assistant' ? captureAssistantSelection : undefined}
 													className={cn(
 														'max-w-[75%] text-sm leading-6 whitespace-pre-wrap',
-								msg.role === 'assistant' && !msg.content && sending && (activeGenerationType === 'image' || activeGenerationType === 'video')
+								msg.role === 'assistant' && !msg.content && sending && activeGenerationType === 'image'
 															? 'border-0 bg-transparent p-0 shadow-none'
 															: msg.role === 'user'
 																? 'rounded-xl rounded-br-md border border-red-500 bg-red-500 px-4 py-3.5 text-white'
@@ -1231,15 +1476,6 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 																	<div className="mt-1 text-[10px] text-muted-foreground">正在构图、处理光影与画面细节…</div>
 																</div>
 															</div>
-												) : activeGenerationType === 'video' ? (
-													<div className="w-[min(480px,72vw)] overflow-hidden rounded-xl border bg-card p-3 shadow-sm" aria-label="AI 正在生成视频">
-														<div className="relative mb-3 flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-muted/70">
-															<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-red-500/10 to-transparent" />
-															<span className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-red-500 text-white shadow-sm"><Video className="h-5 w-5" /></span>
-														</div>
-														<div className="flex items-center gap-2 text-xs font-medium text-red-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /><span>{thinkingStage || 'AI 正在生成视频'}</span></div>
-														<div className="mt-1 text-[10px] text-muted-foreground">正在生成画面与运动细节，通常需要几分钟…</div>
-													</div>
 												) : (
 															<div className="flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-label={thinkingStage || "AI 正在思考"}>
 																<span className="flex items-center gap-1">
@@ -1256,12 +1492,32 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 																content={msg.content}
 																onImportImage={(url) => void importImageToMaterials(msg.id, url)}
 																onInsertImage={insertGeneratedImage}
+																onReferenceImage={referenceGeneratedImage}
 																importingUrls={importingImageUrls}
 																importedUrls={importedImageUrls}
 															/>
 															{sending && msg.id.startsWith('ai-') && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-red-500 align-middle" aria-hidden="true" />}
 														</div>
-													) : msg.content}
+														) : (
+															<div>
+																<MarkdownContent content={msg.content} />
+																{interruptedMessageId === msg.id && (
+																	<button
+																		type="button"
+																		onClick={() => {
+																			const withoutImages = msg.content.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, '').trim()
+																			setInputValue(withoutImages)
+																			setInterruptedMessageId(null)
+																			requestAnimationFrame(() => inputRef.current?.focus())
+																		}}
+																		className="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-white/25"
+																	>
+																		<RotateCcw className="h-3 w-3" />
+																		修改后重发
+																	</button>
+																)}
+															</div>
+														)}
 													{msg.role === 'assistant' && msg.content && msg.content !== '生成失败，请稍后重试。' && !sending && (
 														<div className="mt-3 border-t pt-2">
 															<button
@@ -1308,40 +1564,74 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 												)
 											})}
 										</div>
-										<div className="relative min-h-16 rounded-lg border bg-background px-4 py-3 pr-20 shadow-[0_5px_18px_rgba(30,36,55,.05)] transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5">
+										{attachments.length > 0 && (
+											<div className="mb-2 flex flex-wrap gap-2 px-1">
+												{attachments.map((attachment) => (
+													<div key={attachment.id} className="group flex max-w-44 items-center gap-2 rounded-md border bg-red-50/60 p-1.5 pr-2">
+														<img src={resolveAssetUrl(attachment.url)} alt="" className="h-9 w-9 rounded object-cover" />
+														<span className="min-w-0 flex-1 truncate text-[11px]">{attachment.filename}</span>
+														<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))} className="cursor-pointer text-muted-foreground hover:text-red-500"><X className="h-3.5 w-3.5" /></button>
+													</div>
+												))}
+											</div>
+										)}
+										<div
+											onDragEnter={(event) => {
+												if (event.dataTransfer.types.includes('application/x-creator-material')) setComposerDragActive(true)
+											}}
+											onDragOver={(event) => {
+												if (!event.dataTransfer.types.includes('application/x-creator-material')) return
+												event.preventDefault()
+												event.dataTransfer.dropEffect = 'copy'
+											}}
+											onDragLeave={(event) => {
+												if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setComposerDragActive(false)
+											}}
+											onDrop={handleComposerMaterialDrop}
+											className={cn(
+												"relative min-h-16 rounded-lg border bg-background px-4 py-3 pr-16 shadow-[0_5px_18px_rgba(30,36,55,.05)] transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5 sm:pr-28",
+												composerDragActive && "border-red-400 bg-red-50/70 ring-4 ring-red-500/10 dark:bg-red-950/25",
+											)}
+										>
 											<textarea
 												ref={inputRef}
 												value={inputValue}
 												onChange={(e) => setInputValue(e.target.value)}
+												onCompositionStart={() => { composingRef.current = true }}
+												onCompositionEnd={() => { composingRef.current = false }}
 												placeholder="描述你想创作的内容..."
 												className="scrollBar-hidden block min-h-9 max-h-[200px] w-full resize-none overflow-y-auto border-none bg-transparent py-1.5 text-sm outline-none placeholder:text-muted-foreground"
 												rows={1}
-												onKeyDown={(e) => {
-													if (e.key === 'Enter' && !e.shiftKey) {
-														e.preventDefault()
-														handleSend()
-													}
-													}}
+												onKeyDown={(e) => handleComposerKeyDown(e, () => void handleSend())}
 													onInput={(e) => {
 														resizeInputTextarea(e.currentTarget)
 													}}
 												/>
+											{composerDragActive && (
+												<div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-md border border-dashed border-red-400 bg-background/90 text-xs font-semibold text-red-500 backdrop-blur-sm">
+													松开以引用这张图片
+												</div>
+											)}
 											<div className="absolute bottom-3 right-3 flex items-center gap-1">
-												<Button variant="ghost" size="icon" className="hidden h-8 w-8 text-muted-foreground sm:inline-flex">
-													<Mic className="w-4 h-4" />
+												<input ref={attachmentInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void handleLocalAttachment(event.target.files?.[0])} />
+												<Button type="button" variant="ghost" size="icon" title="上传参考图片" disabled={uploadingAttachment} onClick={() => attachmentInputRef.current?.click()} className="hidden h-8 w-8 cursor-pointer text-muted-foreground sm:inline-flex">
+													{uploadingAttachment ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+												</Button>
+												<Button type="button" variant="ghost" size="icon" title={listening ? '停止语音输入' : '语音输入'} onClick={toggleVoiceInput} className={cn("hidden h-8 w-8 cursor-pointer sm:inline-flex", listening ? "bg-red-50 text-red-500" : "text-muted-foreground")}>
+													<Mic className={cn("w-4 h-4", listening && "animate-pulse")} />
 												</Button>
 												<Button
 													size="icon"
-													onClick={() => handleSend()}
-													disabled={!inputValue.trim() || sending}
+													onClick={() => sending ? stopGeneration() : void handleSend()}
+													disabled={!sending && !inputValue.trim()}
 													className={cn(
 														'w-8 h-8 rounded-full transition-colors',
-														inputValue.trim() && !sending
+														sending || inputValue.trim()
 															? 'bg-red-500 hover:bg-red-600 text-white'
 															: 'bg-muted-foreground/20 text-muted-foreground cursor-not-allowed'
 													)}
 												>
-													<Send className="w-3.5 h-3.5" />
+													{sending ? <Square className="h-3.5 w-3.5 fill-current" /> : <Send className="w-3.5 h-3.5" />}
 												</Button>
 											</div>
 										</div>
@@ -1364,29 +1654,60 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 									{/* 主输入框 */}
 									<div className="workspace-card order-2 mt-auto w-full">
-								<div className="relative min-h-16 rounded-lg border bg-card px-4 py-1 pr-16 transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5">
+										{attachments.length > 0 && (
+											<div className="flex flex-wrap gap-2 border-b px-3 py-2">
+												{attachments.map((attachment) => (
+													<div key={attachment.id} className="flex max-w-44 items-center gap-2 rounded-md bg-red-50 p-1.5 pr-2">
+														<img src={resolveAssetUrl(attachment.url)} alt="" className="h-9 w-9 rounded object-cover" />
+														<span className="min-w-0 flex-1 truncate text-[11px]">{attachment.filename}</span>
+														<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))} className="cursor-pointer text-muted-foreground hover:text-red-500"><X className="h-3.5 w-3.5" /></button>
+													</div>
+												))}
+											</div>
+										)}
+								<div
+									onDragEnter={(event) => {
+										if (event.dataTransfer.types.includes('application/x-creator-material')) setComposerDragActive(true)
+									}}
+									onDragOver={(event) => {
+										if (!event.dataTransfer.types.includes('application/x-creator-material')) return
+										event.preventDefault()
+										event.dataTransfer.dropEffect = 'copy'
+									}}
+									onDragLeave={(event) => {
+										if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setComposerDragActive(false)
+									}}
+									onDrop={handleComposerMaterialDrop}
+									className={cn(
+										"relative min-h-16 rounded-lg border bg-card px-4 py-1 pr-36 transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5",
+										composerDragActive && "border-red-400 bg-red-50/70 ring-4 ring-red-500/10 dark:bg-red-950/25",
+									)}
+								>
 											<textarea
 												ref={inputRef}
 												value={inputValue}
 												onChange={(e) => setInputValue(e.target.value)}
+												onCompositionStart={() => { composingRef.current = true }}
+												onCompositionEnd={() => { composingRef.current = false }}
 												placeholder={isLoggedIn ? "例如：为刚入职场的年轻人写一篇关于 AI 工作流的文章，语气真诚、有具体案例…" : "请先登录后再开始创作"}
 												disabled={!isLoggedIn}
 												className="scrollBar-hidden block min-h-9 max-h-[200px] w-full resize-none overflow-y-auto border-none bg-transparent py-1.5 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
 												rows={1}
-												onKeyDown={(e) => {
-													if (e.key === 'Enter' && !e.shiftKey) {
-														e.preventDefault()
-														if (activeChatId) {
-															handleSend()
-														} else {
-															handleCreateAndSend()
-														}
-													}
-													}}
+												onKeyDown={(e) => handleComposerKeyDown(e, () => void handleCreateAndSend())}
 													onInput={(e) => {
 														resizeInputTextarea(e.currentTarget)
 													}}
-												/>
+											/>
+											{composerDragActive && (
+												<div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-md border border-dashed border-red-400 bg-background/90 text-xs font-semibold text-red-500 backdrop-blur-sm">
+													松开以引用这张图片
+												</div>
+											)}
+											<div className="absolute bottom-3 right-14 flex items-center gap-1">
+												<input ref={attachmentInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void handleLocalAttachment(event.target.files?.[0])} />
+												<Button type="button" variant="ghost" size="icon" title="上传参考图片" disabled={!isLoggedIn || uploadingAttachment} onClick={() => attachmentInputRef.current?.click()} className="h-8 w-8 cursor-pointer text-muted-foreground">{uploadingAttachment ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}</Button>
+												<Button type="button" variant="ghost" size="icon" title={listening ? '停止语音输入' : '语音输入'} disabled={!isLoggedIn} onClick={toggleVoiceInput} className={cn("h-8 w-8 cursor-pointer", listening ? "bg-red-50 text-red-500" : "text-muted-foreground")}><Mic className={cn("h-4 w-4", listening && "animate-pulse")} /></Button>
+											</div>
 											<Button
 												size="icon"
 												onClick={() => {
@@ -1454,6 +1775,44 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					<MaterialShelf materials={materials} onInsert={insertMaterial} />
 				</div>
 			</div>
+			{floatingSelection && (
+				<button
+					type="button"
+					onMouseDown={(event) => event.preventDefault()}
+					onClick={insertSelectedText}
+					style={{ left: floatingSelection.x, top: floatingSelection.y }}
+					className="fixed z-[80] flex -translate-x-1/2 -translate-y-full cursor-pointer items-center gap-1.5 rounded-md bg-[#242632] px-3 py-2 text-xs font-medium text-white shadow-xl transition hover:bg-red-500"
+				>
+					<CopyPlus className="h-3.5 w-3.5" />
+					{floatingSelection.source === 'assistant' ? '插入写作台' : '发送给 AI'}
+				</button>
+			)}
+			<Dialog open={!!renamingChat} onOpenChange={(open) => !open && setRenamingChat(null)}>
+				<DialogContent className="sm:max-w-md">
+					<DialogHeader>
+						<DialogTitle>重命名会话</DialogTitle>
+						<DialogDescription>使用便于回忆的名称整理你的创作记录。</DialogDescription>
+					</DialogHeader>
+					<input
+						autoFocus
+						maxLength={80}
+						value={renameValue}
+						onChange={(event) => setRenameValue(event.target.value)}
+						onKeyDown={(event) => {
+							if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+								event.preventDefault()
+								void saveChatRename()
+							}
+						}}
+						className="focus-red h-10 rounded-md border bg-background px-3 text-sm outline-none"
+						placeholder="输入会话名称"
+					/>
+					<div className="flex justify-end gap-2">
+						<Button variant="outline" onClick={() => setRenamingChat(null)}>取消</Button>
+						<Button disabled={!renameValue.trim()} onClick={() => void saveChatRename()} className="bg-red-500 text-white hover:bg-red-600"><Check className="h-4 w-4" />保存</Button>
+					</div>
+				</DialogContent>
+			</Dialog>
 			<Dialog open={!!deleteChatTarget} onOpenChange={(open) => !open && setDeleteChatTarget(null)}>
 				<DialogContent className="sm:max-w-md">
 					<DialogHeader>

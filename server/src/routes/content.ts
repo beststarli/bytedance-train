@@ -3,10 +3,20 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { pool } from '../utils/db'
 import { verifyToken } from '../utils/jwt'
-import { chatCompletionStream, generateImage, generateVideo, detectModelType, chatSummary } from '../utils/ai'
+import { chatCompletionStream, generateImage, detectModelType, chatSummary } from '../utils/ai'
 import type { ModelType } from '../utils/ai'
+import { executeSkill } from '../skills'
+import type { GeneratedPromptTemplate, PromptTemplateCategory, PromptTemplateGeneratorInput } from '../skills'
 import { truncateToTokenLimit, buildMessages, countTokens, DEFAULT_TEXT_CONFIG } from '../utils/context'
-import { deleteUpload, getUpload, objectStorageErrorMessage, saveUpload } from '../utils/objectStorage'
+import { deleteUpload, getUpload, getUploadByUrl, objectStorageErrorMessage, saveUpload } from '../utils/objectStorage'
+import {
+	applyRewriteProposal,
+	generateRewriteProposals,
+	rejectRewriteProposal,
+	submitWorkForReview,
+} from '../agents/review-service'
+import { createAgentState } from '../agents/core/run-store'
+import { WorkflowRunner } from '../agents/core/workflow'
 
 const router: Router = Router()
 
@@ -15,7 +25,7 @@ function imageMarkdown(urls: string[]) {
 }
 
 function imageExtension(contentType: string) {
-	if (contentType === 'image/jpeg') return 'jpg'
+	if (contentType === 'image/jpeg' || contentType === 'image/jpg') return 'jpg'
 	if (contentType === 'image/webp') return 'webp'
 	if (contentType === 'image/gif') return 'gif'
 	return 'png'
@@ -43,8 +53,39 @@ async function persistGeneratedImages(urls: string[], userId: string) {
 	}))
 }
 
-function videoMarkdown(url: string) {
-	return `[AI 生成视频](${url})`
+interface ImageAttachment {
+	url: string
+	filename?: string
+}
+
+async function validateImageAttachments(userId: string, attachments: ImageAttachment[]) {
+	const unique = Array.from(new Map(attachments.map((item) => [String(item.url || '').trim(), item])).values())
+		.filter((item) => item.url)
+		.slice(0, 4)
+	if (!unique.length) return []
+
+	const { rows: materialRows } = await pool.query(
+		'SELECT url FROM materials WHERE user_id = $1 AND type = $2 AND url = ANY($3::text[])',
+		[userId, 'image', unique.map((item) => item.url)],
+	)
+	const materialUrls = new Set(materialRows.map((row) => row.url))
+	return unique.filter((item) => {
+		if (materialUrls.has(item.url)) return true
+		const filename = path.basename(item.url)
+		return (
+			(item.url.startsWith('/api/content/assets/generated/') || item.url.startsWith('/uploads/'))
+			&& filename.includes(`-${userId}-`)
+		)
+	})
+}
+
+async function imageAttachmentsAsDataUrls(attachments: ImageAttachment[]) {
+	return Promise.all(attachments.map(async (attachment) => {
+		const asset = await getUploadByUrl(attachment.url)
+		if (!asset.contentType.startsWith('image/')) throw new Error('引用的素材不是图片')
+		if (asset.body.length > 20 * 1024 * 1024) throw new Error('引用图片超过 20MB')
+		return `data:${asset.contentType};base64,${asset.body.toString('base64')}`
+	}))
 }
 
 // 认证中间件
@@ -113,11 +154,19 @@ router.patch('/chats/:id', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
 
-	const { title } = req.body
+	const title = String(req.body?.title || '').trim()
+	if (!title) {
+		res.status(400).json({ error: '会话名称不能为空' })
+		return
+	}
 	const { rows } = await pool.query(
 		'UPDATE chats SET title = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING id, title, created_at, updated_at',
-		[title, req.params.id, userId]
+		[title.slice(0, 80), req.params.id, userId]
 	)
+	if (!rows[0]) {
+		res.status(404).json({ error: '会话不存在' })
+		return
+	}
 	res.json({ chat: rows[0] })
 })
 
@@ -135,7 +184,22 @@ router.get('/chats/:id/messages', async (req: Request, res: Response) => {
 		 ORDER BY m.created_at ASC`,
 		[req.params.id, userId]
 	)
-	res.json({ messages: rows })
+	// 兼容旧版本：部分 AI 消息已保存火山临时链接，但图片后来已导入 RustFS。
+	// 即使尚未执行启动迁移，读取历史消息时也优先返回持久化地址。
+	const { rows: imageMappings } = await pool.query(
+		`SELECT source_url, url
+		 FROM materials
+		 WHERE user_id = $1 AND type = 'image' AND source_url IS NOT NULL`,
+		[userId],
+	)
+	const messages = rows.map((message) => ({
+		...message,
+		content: imageMappings.reduce(
+			(content, mapping) => content.replaceAll(String(mapping.source_url), String(mapping.url)),
+			String(message.content || ''),
+		),
+	}))
+	res.json({ messages })
 })
 
 // 发送消息
@@ -168,13 +232,14 @@ router.post('/chats/:id/messages', async (req: Request, res: Response) => {
 	res.json({ message: msgRows[0] })
 })
 
-// ==================== AI 生成（SSE 流式，文生文/图/视频通用） ====================
+// ==================== AI 生成（SSE 流式，文本/图片通用） ====================
 
 router.post('/chats/:id/generate-stream', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
 
 	const { content, model_type } = req.body
+	const attachments = await validateImageAttachments(userId, Array.isArray(req.body?.attachments) ? req.body.attachments : [])
 	if (!content?.trim()) {
 		res.status(400).json({ error: '消息不能为空' })
 		return
@@ -189,10 +254,11 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 		return
 	}
 
+	const persistedUserContent = `${imageMarkdown(attachments.map((item) => item.url))}${attachments.length ? '\n\n' : ''}${content}`.trim()
 	// 存用户消息
 	const { rows: userMsg } = await pool.query(
 		'INSERT INTO messages (chat_id, role, content) VALUES ($1, $2, $3) RETURNING id, role, content, created_at',
-		[req.params.id, 'user', content]
+		[req.params.id, 'user', persistedUserContent]
 	)
 
 	// 设置 SSE 响应头
@@ -203,26 +269,44 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 	// Disable Nagle to prevent TCP buffering of small SSE chunks
 	req.socket?.setNoDelay(true)
 	res.flushHeaders()
+	const generationController = new AbortController()
+	res.on('close', () => {
+		if (!res.writableEnded) generationController.abort()
+	})
 
 	// Send user message event
 	res.write(`data: ${JSON.stringify({ type: 'user_message', message: userMsg[0] })}\n\n`)
 	res.write(`data: ${JSON.stringify({ type: 'status', message: '正在理解你的创作需求' })}\n\n`)
 
+	const contentAgentState = await createAgentState(userId, 'content_generation', {
+		chatId: String(req.params.id),
+		content,
+		attachmentCount: attachments.length,
+	})
+	const contentRunner = new WorkflowRunner(contentAgentState)
 	try {
-		const modelType: ModelType = model_type && ['text', 'image', 'video'].includes(model_type)
-			? model_type
-			: detectModelType(content)
+		await contentRunner.start()
+		res.write(`data: ${JSON.stringify({ type: 'agent_run', run_id: contentAgentState.runId })}\n\n`)
+		const modelType = await contentRunner.step<ModelType>('route_model', { model_type, attachmentCount: attachments.length }, () =>
+			attachments.length
+				? 'image'
+				: model_type && ['text', 'image'].includes(model_type)
+					? model_type as ModelType
+					: detectModelType(content),
+		)
 
 		let fullContent = ''
 		res.write(`data: ${JSON.stringify({
 			type: 'status',
 			model_type: modelType,
-			message: modelType === 'image' ? 'AI 正在绘制图片' : modelType === 'video' ? 'AI 正在生成视频' : 'AI 正在思考',
+			message: modelType === 'image' ? 'AI 正在处理图片' : 'AI 正在思考',
 		})}\n\n`)
 
-		switch (modelType) {
+		await contentRunner.step('generate_content', { modelType }, async () => {
+			switch (modelType) {
 			case 'image': {
-				const temporaryUrls = await generateImage(content)
+				const imageInputs = await imageAttachmentsAsDataUrls(attachments)
+				const temporaryUrls = await generateImage(content, imageInputs, generationController.signal)
 				res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'image', message: '正在持久化生成图片' })}\n\n`)
 				const urls = await persistGeneratedImages(temporaryUrls, userId)
 				fullContent = imageMarkdown(urls) || '图片生成失败'
@@ -243,7 +327,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 								role: 'user',
 								content: `刚生成图片时使用的创作要求如下：\n${content}`,
 							},
-						])
+							], 'text', generationController.signal)
 						for await (const descriptionChunk of descriptionStream) {
 							fullContent += descriptionChunk
 							res.write(`data: ${JSON.stringify({ type: 'chunk', content: descriptionChunk })}\n\n`)
@@ -255,15 +339,6 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 						res.write(`data: ${JSON.stringify({ type: 'chunk', content: fallbackDescription })}\n\n`)
 					}
 				}
-				break
-			}
-			case 'video': {
-				const { task_id, video_url } = await generateVideo(content, (status) => {
-					const message = status === 'queued' ? '视频任务正在排队' : status === 'running' ? 'AI 正在生成视频' : '正在处理视频结果'
-					res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'video', message, task_id })}\n\n`)
-				})
-				fullContent = videoMarkdown(video_url)
-				res.write(`data: ${JSON.stringify({ type: 'video', content: fullContent, url: video_url, task_id })}\n\n`)
 				break
 			}
 			default: {
@@ -284,7 +359,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 				const totalTokens = finalMessages.reduce((sum, m) => sum + countTokens(m.content), 0)
 				console.log(`[Stream ${req.params.id}] ${finalMessages.length} messages, ~${totalTokens} tokens`)
 
-				const stream = chatCompletionStream(finalMessages)
+				const stream = chatCompletionStream(finalMessages, 'text', generationController.signal)
 				res.write(`data: ${JSON.stringify({ type: 'status', model_type: 'text', message: 'AI 正在思考' })}\n\n`)
 
 				for await (const chunk of stream) {
@@ -301,7 +376,9 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 					})
 				}
 			}
-		}
+			}
+			return { modelType, outputLength: fullContent.length }
+		})
 
 		// 存 AI 消息
 		const { rows: aiMsg } = await pool.query(
@@ -318,11 +395,42 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 		}
 
 		res.write(`data: ${JSON.stringify({ type: 'done', message: aiMsg[0] })}\n\n`)
-	} catch (err: any) {
-		console.error('[Stream] Error:', err)
+		await contentRunner.complete({ messageId: aiMsg[0].id, modelType })
+		} catch (err: any) {
+			await contentRunner.fail(err)
+			if (generationController.signal.aborted) {
+				console.info(`[Stream ${req.params.id}] generation aborted by client`)
+				return
+			}
+			console.error('[Stream] Error:', err)
 		res.write(`data: ${JSON.stringify({ type: 'error', message: err.message || '生成失败' })}\n\n`)
 	} finally {
 		res.end()
+	}
+})
+
+router.post('/ai-attachments', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	const data = String(req.body?.data || '')
+	const filename = String(req.body?.filename || 'reference.png')
+	const match = data.match(/^data:(image\/[\w.+-]+);base64,(.+)$/)
+	if (!match) {
+		res.status(400).json({ error: '请选择有效的图片文件' })
+		return
+	}
+	const mime = match[1]!
+	const buffer = Buffer.from(match[2]!, 'base64')
+	if (buffer.length > 10 * 1024 * 1024) {
+		res.status(400).json({ error: '图片不能超过 10MB' })
+		return
+	}
+	try {
+		const storedName = `ai-input-${userId}-${Date.now()}-${randomUUID().slice(0, 8)}.${imageExtension(mime)}`
+		const url = await saveUpload(`generated/${storedName}`, buffer, mime)
+		res.json({ attachment: { url, filename: path.basename(filename), type: 'image' } })
+	} catch (error) {
+		res.status(502).json({ error: objectStorageErrorMessage(error) })
 	}
 })
 
@@ -363,7 +471,7 @@ router.get('/search', async (req: Request, res: Response) => {
 			? pool.query(
 				`SELECT id, filename AS title, type
 				 FROM materials
-				 WHERE user_id = $2 AND filename ILIKE $1 ESCAPE '\\'
+			 WHERE user_id = $2 AND type = 'image' AND filename ILIKE $1 ESCAPE '\\'
 				 ORDER BY created_at DESC LIMIT 5`,
 				[keyword, userId],
 			)
@@ -382,12 +490,48 @@ router.post('/prompts', async (req: Request, res: Response) => {
 		res.status(400).json({ error: '标题和内容不能为空' })
 		return
 	}
+	const normalizedCategory = category === 'video' ? 'image_edit' : category
+	if (!['writing', 'image', 'image_edit', 'optimize', 'article', 'general'].includes(normalizedCategory || '')) {
+		res.status(400).json({ error: '提示词模版类别无效' })
+		return
+	}
 
 	const { rows } = await pool.query(
 		'INSERT INTO prompts (title, description, content, category, icon) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-		[title, description || '', content, category || 'general', icon || 'FileText']
+		[title, description || '', content, normalizedCategory || 'general', icon === 'Video' ? 'WandSparkles' : icon || 'FileText']
 	)
 	res.json({ prompt: rows[0] })
+})
+
+router.post('/prompts/generate', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+
+	const input = {
+		category: String(req.body?.category || '') as PromptTemplateCategory,
+		requirement: String(req.body?.requirement || ''),
+	}
+	const state = await createAgentState(userId, 'prompt_generation', input)
+	const runner = new WorkflowRunner(state)
+	try {
+		await runner.start()
+		const execution = await runner.step(
+			'prompt_template_generator_skill',
+			input,
+			() => executeSkill<PromptTemplateGeneratorInput, GeneratedPromptTemplate>(
+				'prompt-template-generator',
+				input,
+			),
+		)
+		await runner.complete(execution)
+		res.json({ template: execution.output, skill: execution.skill, agentRunId: state.runId })
+	} catch (error) {
+		await runner.fail(error)
+		console.error('[Skill prompt-template-generator] 执行失败：', error)
+		const message = error instanceof Error ? error.message : '提示词生成 Skill 执行失败'
+		const status = /请选择|至少输入|不能超过/.test(message) ? 400 : 502
+		res.status(status).json({ error: message })
+	}
 })
 
 router.put('/prompts/:id', async (req: Request, res: Response) => {
@@ -395,9 +539,14 @@ router.put('/prompts/:id', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { title, description, content, category, icon, sort_order, is_active } = req.body
+	const normalizedCategory = category === 'video' ? 'image_edit' : category
+	if (normalizedCategory && !['writing', 'image', 'image_edit', 'optimize', 'article', 'general'].includes(normalizedCategory)) {
+		res.status(400).json({ error: '提示词模版类别无效' })
+		return
+	}
 	const { rows } = await pool.query(
 		'UPDATE prompts SET title = COALESCE($1, title), description = COALESCE($2, description), content = COALESCE($3, content), category = COALESCE($4, category), icon = COALESCE($5, icon), sort_order = COALESCE($6, sort_order), is_active = COALESCE($7, is_active) WHERE id = $8 RETURNING *',
-		[title, description, content, category, icon, sort_order, is_active, req.params.id]
+		[title, description, content, normalizedCategory, icon === 'Video' ? 'WandSparkles' : icon, sort_order, is_active, req.params.id]
 	)
 	res.json({ prompt: rows[0] || null })
 })
@@ -417,13 +566,19 @@ router.get('/works', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { rows } = await pool.query(
-		`SELECT w.id, w.title, w.content, w.status, w.quality_score, w.view_count, w.created_at, w.updated_at,
+		`SELECT w.id,
+			 CASE WHEN w.review_status IN ('pending_review', 'needs_revision', 'blocked', 'failed', 'draft_changes')
+				THEN COALESCE(lv.title, w.title) ELSE w.title END AS title,
+			 CASE WHEN w.review_status IN ('pending_review', 'needs_revision', 'blocked', 'failed', 'draft_changes')
+				THEN COALESCE(lv.content, w.content) ELSE w.content END AS content,
+			 w.status, w.review_status, w.quality_score, w.view_count, w.created_at, w.updated_at,
 			 COUNT(*) FILTER (WHERE r.type = 'like')::int AS like_count,
 			 COUNT(*) FILTER (WHERE r.type = 'favorite')::int AS favorite_count
 		 FROM works w
+		 LEFT JOIN work_versions lv ON lv.id = w.latest_version_id
 		 LEFT JOIN work_reactions r ON r.work_id = w.id
 		 WHERE w.user_id = $1
-		 GROUP BY w.id
+		 GROUP BY w.id, lv.id
 		 ORDER BY w.updated_at DESC`,
 		[userId]
 	)
@@ -435,9 +590,25 @@ router.post('/works', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { title, content, status } = req.body
+	if (status === 'published') {
+		try {
+			const submitted = await submitWorkForReview({
+				userId,
+				title: String(title || '未命名作品'),
+				content: String(content || ''),
+			})
+			res.status(202).json({
+				work: { id: submitted.workId, title, content, status: 'draft', review_status: 'pending_review' },
+				reviewJob: submitted.reviewJob,
+			})
+		} catch (error) {
+			res.status(400).json({ error: error instanceof Error ? error.message : '提交审核失败' })
+		}
+		return
+	}
 	const { rows } = await pool.query(
 		'INSERT INTO works (user_id, title, content, status) VALUES ($1, $2, $3, $4) RETURNING *',
-		[userId, title || '未命名作品', content || '', status || 'published']
+		[userId, title || '未命名作品', content || '', 'draft']
 	)
 	res.json({ work: rows[0] })
 })
@@ -447,6 +618,73 @@ router.put('/works/:id', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { title, content, status } = req.body
+	if (status === 'published') {
+		try {
+			const submitted = await submitWorkForReview({
+				userId,
+				workId: String(req.params.id),
+				title: String(title || '未命名作品'),
+				content: String(content || ''),
+			})
+			res.status(202).json({
+				work: { id: submitted.workId, title, content, status: 'draft', review_status: 'pending_review' },
+				reviewJob: submitted.reviewJob,
+			})
+		} catch (error) {
+			res.status(400).json({ error: error instanceof Error ? error.message : '提交审核失败' })
+		}
+		return
+	}
+	const { rows: currentRows } = await pool.query(
+		'SELECT * FROM works WHERE id = $1 AND user_id = $2',
+		[req.params.id, userId],
+	)
+	const current = currentRows[0]
+	if (!current) {
+		res.status(404).json({ error: '作品不存在' })
+		return
+	}
+	if (current.status === 'published') {
+		const client = await pool.connect()
+		try {
+			await client.query('BEGIN')
+			const { rows: numbers } = await client.query(
+				`SELECT COALESCE(MAX(version_number), 0)::int + 1 AS next_version
+				 FROM work_versions WHERE work_id = $1`,
+				[req.params.id],
+			)
+			const { rows: versions } = await client.query(
+				`INSERT INTO work_versions
+				 (work_id, parent_version_id, version_number, title, content, source, status)
+				 VALUES ($1, $2, $3, $4, $5, 'user', 'draft') RETURNING *`,
+				[
+					req.params.id, current.latest_version_id, numbers[0].next_version,
+					title ?? current.title, content ?? current.content,
+				],
+			)
+			await client.query(
+				`UPDATE works SET latest_version_id = $1, review_status = 'draft_changes', updated_at = NOW()
+				 WHERE id = $2`,
+				[versions[0].id, req.params.id],
+			)
+			await client.query('COMMIT')
+			res.json({
+				work: {
+					...current,
+					title: versions[0].title,
+					content: versions[0].content,
+					review_status: 'draft_changes',
+					updated_at: new Date().toISOString(),
+				},
+			})
+		} catch (error) {
+			await client.query('ROLLBACK')
+			throw error
+		} finally {
+			client.release()
+		}
+		return
+	}
 	const { rows } = await pool.query(
 		`UPDATE works
 		 SET title = COALESCE($1, title),
@@ -459,6 +697,118 @@ router.put('/works/:id', async (req: Request, res: Response) => {
 		[title, content, status, req.params.id, userId]
 	)
 	res.json({ work: rows[0] || null })
+})
+
+router.get('/reviews', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	const { rows } = await pool.query(
+		`SELECT w.id AS work_id, w.status AS publication_status, w.review_status,
+			 w.quality_score, w.updated_at, w.latest_version_id,
+			 COALESCE(v.title, w.title) AS title, COALESCE(v.content, w.content) AS content,
+			 j.id AS review_job_id, j.status AS job_status, j.decision,
+			 j.risk_score, j.quality_score AS review_quality_score, j.summary,
+			 j.error, j.created_at AS submitted_at, j.completed_at
+		 FROM works w
+		 LEFT JOIN work_versions v ON v.id = w.latest_version_id
+		 LEFT JOIN LATERAL (
+			 SELECT * FROM review_jobs rj WHERE rj.work_id = w.id
+			 ORDER BY rj.created_at DESC LIMIT 1
+		 ) j ON true
+		 WHERE w.user_id = $1
+		 ORDER BY COALESCE(j.created_at, w.updated_at) DESC`,
+		[userId],
+	)
+	res.json({ reviews: rows })
+})
+
+router.get('/reviews/:id', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	const { rows } = await pool.query(
+		`SELECT j.*, v.title, v.content, v.version_number, w.review_status, w.status AS publication_status
+		 FROM review_jobs j
+		 JOIN work_versions v ON v.id = j.work_version_id
+		 JOIN works w ON w.id = j.work_id
+		 WHERE j.id = $1 AND j.user_id = $2`,
+		[req.params.id, userId],
+	)
+	if (!rows[0]) {
+		res.status(404).json({ error: '审核记录不存在' })
+		return
+	}
+	const [findings, proposals, steps] = await Promise.all([
+		pool.query(`SELECT * FROM review_findings WHERE review_job_id = $1 ORDER BY created_at ASC`, [req.params.id]),
+		pool.query(`SELECT * FROM rewrite_proposals WHERE review_job_id = $1 ORDER BY created_at DESC`, [req.params.id]),
+		rows[0].agent_run_id
+			? pool.query(
+				`SELECT step_name, status, error, started_at, completed_at
+				 FROM agent_steps WHERE run_id = $1 ORDER BY id ASC`,
+				[rows[0].agent_run_id],
+			)
+			: Promise.resolve({ rows: [] }),
+	])
+	res.json({ review: rows[0], findings: findings.rows, proposals: proposals.rows, steps: steps.rows })
+})
+
+router.post('/works/:id/submit-review', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	try {
+		let title = String(req.body?.title || '').trim()
+		let content = String(req.body?.content || '').trim()
+		if (!title || !content) {
+			const { rows } = await pool.query(
+				`SELECT COALESCE(v.title, w.title) AS title, COALESCE(v.content, w.content) AS content
+				 FROM works w LEFT JOIN work_versions v ON v.id = w.latest_version_id
+				 WHERE w.id = $1 AND w.user_id = $2`,
+				[req.params.id, userId],
+			)
+			if (!rows[0]) throw new Error('作品不存在')
+			title ||= rows[0].title
+			content ||= rows[0].content
+		}
+		if (!title || !content) throw new Error('标题和正文不能为空')
+		const submitted = await submitWorkForReview({
+			userId, workId: String(req.params.id), title, content, source: req.body?.source === 'ai' ? 'ai' : 'user',
+		})
+		res.status(202).json({ reviewJob: submitted.reviewJob, workId: submitted.workId })
+	} catch (error) {
+		res.status(400).json({ error: error instanceof Error ? error.message : '提交审核失败' })
+	}
+})
+
+router.post('/review-jobs/:id/rewrite', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	try {
+		const proposals = await generateRewriteProposals(String(req.params.id), userId)
+		res.json({ proposals })
+	} catch (error) {
+		res.status(400).json({ error: error instanceof Error ? error.message : '生成替代内容失败' })
+	}
+})
+
+router.post('/rewrite-proposals/:id/apply', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	try {
+		const result = await applyRewriteProposal(String(req.params.id), userId)
+		res.json(result)
+	} catch (error) {
+		res.status(400).json({ error: error instanceof Error ? error.message : '采用替代内容失败' })
+	}
+})
+
+router.post('/rewrite-proposals/:id/reject', async (req: Request, res: Response) => {
+	const userId = auth(req, res)
+	if (!userId) return
+	try {
+		const result = await rejectRewriteProposal(String(req.params.id), userId)
+		res.json(result)
+	} catch (error) {
+		res.status(400).json({ error: error instanceof Error ? error.message : '保留原内容失败' })
+	}
 })
 
 router.delete('/works/:id', async (req: Request, res: Response) => {
@@ -503,7 +853,7 @@ router.get('/materials', async (req: Request, res: Response) => {
 	if (!userId) return
 
 	const { rows } = await pool.query(
-		'SELECT id, filename, url, type, size, source_url, created_at FROM materials WHERE user_id = $1 ORDER BY created_at DESC',
+		"SELECT id, filename, url, type, size, source_url, created_at FROM materials WHERE user_id = $1 AND type = 'image' ORDER BY created_at DESC",
 		[userId]
 	)
 	res.json({ materials: rows })
@@ -579,29 +929,31 @@ router.post('/materials', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
 
-	const { filename, data, type } = req.body
+	const { filename, data } = req.body
 	if (!data) {
 		res.status(400).json({ error: '文件数据不能为空' })
 		return
 	}
 
 	try {
-		const matches = data.match(/^data:(image\/[\w.+-]+|video\/[\w.+-]+|audio\/[\w.+-]+);base64,(.+)$/)
+		const matches = data.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,(.+)$/i)
 		if (!matches) {
-			res.status(400).json({ error: '文件格式不正确' })
+			res.status(400).json({ error: '素材库仅支持 PNG、JPG、WEBP 或 GIF 图片' })
 			return
 		}
 
-		const mime = matches[1]
+		const mime = matches[1].toLowerCase()
 		const buffer = Buffer.from(matches[2], 'base64')
-		const ext = filename?.split('.').pop() || (mime.includes('image') ? 'png' : mime.includes('video') ? 'mp4' : 'mp3')
+		if (buffer.length > 10 * 1024 * 1024) {
+			res.status(400).json({ error: '图片不能超过 10MB' })
+			return
+		}
+		const ext = imageExtension(mime)
 		const savedName = `mat_${userId}_${Date.now()}.${ext}`
 		const url = await saveUpload(`materials/${savedName}`, buffer, mime)
-		const fileType = type || (mime.includes('image') ? 'image' : mime.includes('video') ? 'video' : 'other')
-
 		const { rows } = await pool.query(
 			'INSERT INTO materials (user_id, filename, url, type, size) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-			[userId, filename || savedName, url, fileType, buffer.length]
+			[userId, filename || savedName, url, 'image', buffer.length]
 		)
 
 		res.json({ material: rows[0] })

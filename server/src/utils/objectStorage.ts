@@ -97,6 +97,56 @@ export async function getUpload(key: string) {
 	}
 }
 
+export async function getUploadByUrl(url: string) {
+	const proxyPrefix = '/api/content/assets/'
+	if (url.startsWith(proxyPrefix)) {
+		const key = url.slice(proxyPrefix.length)
+		if (!/^(materials|generated)\/[^/]+$/.test(key)) throw new Error('图片资源地址无效')
+		try {
+			return await getUpload(key)
+		} catch (error) {
+			if (!key.startsWith('materials/ai-generated-')) throw error
+			return getUpload(key.replace(/^materials\//, 'generated/'))
+		}
+	}
+	if (url.startsWith('/uploads/')) {
+		const filename = path.basename(url)
+		const filePath = path.join(__dirname, '../../uploads', filename)
+		if (!fs.existsSync(filePath)) throw new Error('图片资源不存在')
+		const extension = path.extname(filename).toLowerCase()
+		const contentType = extension === '.jpg' || extension === '.jpeg'
+			? 'image/jpeg'
+			: extension === '.webp' ? 'image/webp'
+				: extension === '.gif' ? 'image/gif' : 'image/png'
+		return { body: fs.readFileSync(filePath), contentType, etag: undefined }
+	}
+	throw new Error('不支持的图片资源地址')
+}
+
+async function replaceStoredContentUrl(sourceUrl: string, persistedUrl: string) {
+	if (!sourceUrl || sourceUrl === persistedUrl) return
+	await Promise.all([
+		pool.query(
+			`UPDATE works
+			 SET content = REPLACE(content, $1, $2), updated_at = NOW()
+			 WHERE content LIKE '%' || $1 || '%'`,
+			[sourceUrl, persistedUrl],
+		),
+		pool.query(
+			`UPDATE work_versions
+			 SET content = REPLACE(content, $1, $2)
+			 WHERE content LIKE '%' || $1 || '%'`,
+			[sourceUrl, persistedUrl],
+		),
+		pool.query(
+			`UPDATE messages
+			 SET content = REPLACE(content, $1, $2)
+			 WHERE content LIKE '%' || $1 || '%'`,
+			[sourceUrl, persistedUrl],
+		),
+	])
+}
+
 export async function migrateLocalUploadsToObjectStorage() {
 	const { client, bucket } = storageConfig()
 	if (!client || !bucket) return
@@ -105,7 +155,7 @@ export async function migrateLocalUploadsToObjectStorage() {
 	// 修复已迁移素材对应文章正文中的旧 /uploads 链接。
 	// 旧版本只更新了 materials.url，导致作品 Markdown 仍指向已删除的本地文件。
 	const { rows: storedMaterials } = await pool.query(
-		"SELECT url, source_url FROM materials WHERE url NOT LIKE '/uploads/%'"
+		"SELECT url, source_url FROM materials WHERE type = 'image' AND url NOT LIKE '/uploads/%'"
 	)
 	for (const material of storedMaterials) {
 		let filename = ''
@@ -119,18 +169,9 @@ export async function migrateLocalUploadsToObjectStorage() {
 		// AI 生成图原始对象位于 generated/。旧逻辑在重启时统一改成
 		// materials/，导致数据库指向不存在的对象。
 		const proxyUrl = objectUrl(materialObjectKey(material.url, filename, material.source_url))
-		await pool.query(
-			`UPDATE works
-			 SET content = REPLACE(content, $1, $2), updated_at = NOW()
-			 WHERE content LIKE '%' || $1 || '%'`,
-			[legacyUrl, proxyUrl],
-		)
-		await pool.query(
-			`UPDATE works
-			 SET content = REPLACE(content, $1, $2), updated_at = NOW()
-			 WHERE content LIKE '%' || $1 || '%'`,
-			[material.url, proxyUrl],
-		)
+		await replaceStoredContentUrl(legacyUrl, proxyUrl)
+		await replaceStoredContentUrl(material.url, proxyUrl)
+		if (material.source_url) await replaceStoredContentUrl(material.source_url, proxyUrl)
 		await pool.query('UPDATE materials SET url = $1 WHERE url = $2', [proxyUrl, material.url])
 	}
 
@@ -150,21 +191,15 @@ export async function migrateLocalUploadsToObjectStorage() {
 	if (!fs.existsSync(uploadDir)) return
 
 	const { rows: materials } = await pool.query(
-		"SELECT id, url, type FROM materials WHERE url LIKE '/uploads/%'"
+		"SELECT id, url FROM materials WHERE type = 'image' AND url LIKE '/uploads/%'"
 	)
 	for (const material of materials) {
 		const localPath = path.join(uploadDir, path.basename(material.url))
 		if (!fs.existsSync(localPath)) continue
 		const key = `materials/${path.basename(material.url)}`
-		const mime = material.type === 'video' ? 'video/mp4' : 'image/jpeg'
-		const url = await saveUpload(key, fs.readFileSync(localPath), mime)
+		const url = await saveUpload(key, fs.readFileSync(localPath), 'image/jpeg')
 		await pool.query('UPDATE materials SET url = $1 WHERE id = $2', [url, material.id])
-		await pool.query(
-			`UPDATE works
-			 SET content = REPLACE(content, $1, $2), updated_at = NOW()
-			 WHERE content LIKE '%' || $1 || '%'`,
-			[material.url, url],
-		)
+		await replaceStoredContentUrl(material.url, url)
 		fs.unlinkSync(localPath)
 	}
 
