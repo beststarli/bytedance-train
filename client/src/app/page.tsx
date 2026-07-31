@@ -44,7 +44,7 @@ export default function Home() {
 			case "materials":
 				return <MaterialsPage key={`materials-${privatePageKey}`} />
 			case "review":
-				return <ReviewPage key={`review-${privatePageKey}`} />
+				return <ReviewPage key={`review-${privatePageKey}`} onNavigate={setActiveMenu} />
 			case "userPage":
 				return <UserPage key={`profile-${privatePageKey}`} onNavigate={setActiveMenu} onLoginClick={() => setShowLogin(true)} />
 			default:

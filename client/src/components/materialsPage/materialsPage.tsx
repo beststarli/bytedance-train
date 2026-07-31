@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { formatSize } from '@/lib/tools'
 import { useAuthStore } from '@/store/userStore'
 import AuthRequired from '@/components/auth-required'
+import { toast } from 'sonner'
 
 interface Material {
   id: string
@@ -53,7 +54,12 @@ export default function MaterialsPage() {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !user) return
-    if (file.size > 10 * 1024 * 1024) { alert('文件不能超过10MB'); return }
+    if (!['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(file.type.toLowerCase())) {
+      toast.error('仅支持 PNG、JPG、WEBP 或 GIF 图片')
+      e.target.value = ''
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) { toast.error('图片不能超过 10MB'); return }
 
     setUploading(true)
     try {
@@ -64,15 +70,14 @@ export default function MaterialsPage() {
         reader.readAsDataURL(file)
       })
 
-      const type = file.type.startsWith('image') ? 'image' : file.type.startsWith('video') ? 'video' : 'other'
       await api('/api/content/materials', {
         method: 'POST',
-        body: JSON.stringify({ filename: file.name, data: base64, type }),
+        body: JSON.stringify({ filename: file.name, data: base64, type: 'image' }),
       })
       setLoading(true)
       load()
     } catch (error) {
-      alert(error instanceof Error ? error.message : '上传失败')
+      toast.error(error instanceof Error ? error.message : '上传失败')
     }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
   }
@@ -100,10 +105,10 @@ export default function MaterialsPage() {
           <div>
             <div className="workspace-label mb-2">Asset library</div>
             <h1 className="text-2xl font-bold">素材库</h1>
-            <p className="text-sm text-muted-foreground mt-1.5">管理图片、视频和创作参考，共 {materials.length} 个素材</p>
+            <p className="text-sm text-muted-foreground mt-1.5">管理图片与视觉创作参考，共 {materials.length} 张图片</p>
           </div>
           <div>
-            <input ref={fileRef} type="file" accept="image/*,video/*" onChange={handleUpload} className="hidden" disabled={uploading || !user} />
+            <input ref={fileRef} type="file" accept=".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif" onChange={handleUpload} className="hidden" disabled={uploading || !user} />
             <Button onClick={() => fileRef.current?.click()} disabled={uploading || !user} className="h-10 rounded-lg bg-[#f5222d] hover:bg-[#df1722] text-white gap-2">
               <Upload className="w-4 h-4" />{uploading ? '上传中...' : '上传素材'}
             </Button>
@@ -121,23 +126,8 @@ export default function MaterialsPage() {
             {materials.map((m) => {
               return (
                 <div key={m.id} className="workspace-card group overflow-hidden hover:border-red-200 transition-all hover:-translate-y-0.5">
-                  <div className="aspect-video bg-muted flex items-center justify-center relative overflow-hidden">
-                    {m.type === 'image' ? (
-                      <img src={m.url} alt={m.filename} className="w-full h-full object-cover" />
-                    ) : m.type === 'video' ? (
-                      <video
-                        src={m.url}
-                        controls
-                        playsInline
-                        preload="metadata"
-                        aria-label={`视频素材 ${m.filename}`}
-                        className="h-full w-full bg-black object-contain"
-                      >
-                        当前浏览器不支持视频播放。
-                      </video>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">暂不支持预览</span>
-                    )}
+                  <div className="aspect-[16/9] bg-muted flex items-center justify-center relative overflow-hidden">
+                    <img src={m.url} alt={m.filename} className="w-full h-full object-cover" />
                     <button
                       onClick={() => {
                         setDeleteError('')
