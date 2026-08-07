@@ -1,5 +1,7 @@
 # 创作与内容审核 Agent 架构
 
+> 面试准备与零基础概念说明见 [AI_AGENT_INTERVIEW_GUIDE.md](./AI_AGENT_INTERVIEW_GUIDE.md)。
+
 ## 目标
 
 平台将内容生成、提示词生成、内容审核和合规改写统一到一个可追踪的 Agent Runtime 中。每次运行都有独立状态、步骤和事件，长任务可恢复，审核结论可解释，AI 生成的替代内容必须经过用户确认后才进入新版本。

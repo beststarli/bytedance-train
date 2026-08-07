@@ -16,7 +16,6 @@ import {
     ChevronDown,
     Plus,
     Link,
-    ShieldCheck,
 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -212,17 +211,24 @@ export default function Header({
 
             {/* 右侧操作区 */}
             <div className="flex items-center gap-2">
+
+                <div className="group relative hidden sm:block">
+                    <Button aria-describedby="filing-tooltip" variant="ghost" size="icon" className="cursor-pointer rounded-lg hover:bg-accent">
+                        <img src="/police-badge.png" alt="备案信息" className="h-6 w-6 object-contain" />
+                    </Button>
+                    <div id="filing-tooltip" role="tooltip" className="pointer-events-none absolute right-0 top-11 z-50 flex w-max max-w-72 translate-y-1 flex-col items-center justify-center gap-2 rounded-md border bg-popover px-3 py-2.5 text-center text-[11px] text-popover-foreground opacity-0 shadow-md transition-all group-hover:pointer-events-auto group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-y-0 group-focus-within:opacity-100">
+                        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" className="flex w-full cursor-pointer items-center justify-center whitespace-nowrap text-blue-500 transition-colors hover:text-blue-600 hover:underline">
+                            冀ICP备2026007642号-2
+                        </a>
+                        <a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer" className="flex w-full cursor-pointer items-center justify-center gap-2 whitespace-nowrap text-blue-500 transition-colors hover:text-blue-600 hover:underline">
+                            <img src="/police-badge.png" alt="公安备案" className="h-5 w-5 shrink-0 object-contain" />
+                            <span>公安备案号：待申请（位置预留）</span>
+                        </a>
+                    </div>
+                </div>
                 <a href="https://www.toutiao.com" target="_blank" rel="noopener noreferrer" className="hidden rounded-lg text-muted-foreground  sm:inline-flex items-center justify-center w-8 h-8 hover:bg-accent transition-colors hover:text-red-500">
                     <Link className="w-4 h-4 " />
                 </a>
-                <div className="group relative hidden sm:block">
-                    <Button aria-describedby="filing-tooltip" variant="ghost" size="icon" className="cursor-pointer rounded-lg text-muted-foreground hover:text-red-500">
-                        <ShieldCheck className="h-5 w-5" />
-                    </Button>
-                    <div id="filing-tooltip" role="tooltip" className="pointer-events-none absolute right-0 top-11 z-50 w-max max-w-64 translate-y-1 rounded-md border bg-popover px-3 py-2 text-[11px] text-popover-foreground opacity-0 shadow-md transition-all group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100">
-                        ICP 备案信息：待申请（信息位置预留）
-                    </div>
-                </div>
                 <Button variant="ghost" size="icon" onClick={() => setHelpOpen(true)} className="hidden cursor-pointer rounded-lg text-muted-foreground hover:text-foreground sm:inline-flex">
                     <HelpCircle className="w-5 h-5" />
                 </Button>
