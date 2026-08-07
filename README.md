@@ -11,6 +11,13 @@
 
 ## 功能介绍
 
+### 项目文档
+
+- [创作与内容审核 Agent 架构](./docs/AGENT_ARCHITECTURE.md)
+- [AI Agent 架构面试八股与项目深挖](./docs/AI_AGENT_INTERVIEW_GUIDE.md)
+- [AIGC 平台全栈面试深挖](./docs/INTERVIEW_DEEP_DIVE.md)
+- [RustFS 对象存储说明](./docs/RUSTFS_STORAGE.md)
+
 ## 本地启动
 ### 前端
 
@@ -28,5 +35,3 @@ rustfs server \
 
 ## Bug修复
 ***欢迎在Issue中向我反馈Bug，我会尽快修复。***
-
-
