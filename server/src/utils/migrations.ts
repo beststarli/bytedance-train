@@ -221,9 +221,41 @@ const MIGRATIONS_SQL = `
 	BEGIN
 		IF to_regclass('public.prompts') IS NOT NULL THEN
 			UPDATE prompts
-			SET category = 'image_edit',
-				icon = CASE WHEN icon = 'Video' THEN 'WandSparkles' ELSE icon END
-			WHERE category = 'video';
+			SET title = '图片修改',
+				description = '基于当前引用图片按要求调整画面',
+				content = '请以当前引用的图片为基础，根据我的需求{修改需求}，生成风格为{目标风格}的新图片。',
+				category = 'image_edit',
+				icon = 'WandSparkles'
+			WHERE category = 'video'
+			   OR icon IN ('Video', 'VideoIcon')
+			   OR title IN ('视频脚本', '短视频脚本', '局部重绘')
+			   OR content LIKE '%生成一个短视频脚本%';
+
+			IF NOT EXISTS (
+				SELECT 1 FROM prompts
+				WHERE title = '图片修改' AND category = 'image_edit'
+			) THEN
+				INSERT INTO prompts (title, description, content, category, icon)
+				VALUES (
+					'图片修改',
+					'基于当前引用图片按要求调整画面',
+					'请以当前引用的图片为基础，根据我的需求{修改需求}，生成风格为{目标风格}的新图片。',
+					'image_edit',
+					'WandSparkles'
+				);
+			END IF;
+
+			DELETE FROM prompts
+			WHERE id IN (
+				SELECT id FROM (
+					SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS duplicate_rank
+					FROM prompts
+					WHERE title = '图片修改'
+					  AND category = 'image_edit'
+					  AND content = '请以当前引用的图片为基础，根据我的需求{修改需求}，生成风格为{目标风格}的新图片。'
+				) duplicate_defaults
+				WHERE duplicate_rank > 1
+			);
 		END IF;
 	END $$;
 `
