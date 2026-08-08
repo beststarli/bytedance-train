@@ -34,7 +34,7 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '@/store/userStore'
 import { api, getValidAccessToken } from '@/api/api'
-import { cn } from '@/lib/utils'
+import { cn, createClientId } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { emitTaskProgress } from '@/components/taskProgress'
 import { resolveAssetUrl } from '@/lib/asset-url'
@@ -514,7 +514,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	const attachmentInputRef = useRef<HTMLInputElement>(null)
 	const draftEditorRef = useRef<HTMLDivElement>(null)
+	const activeChatIdRef = useRef<string | null>(null)
+	const messagesRef = useRef<Message[]>([])
 	const streamingChatIdRef = useRef<string | null>(null)
+	const streamingMessagesRef = useRef<Message[]>([])
 	const streamAbortRef = useRef<AbortController | null>(null)
 	const currentUserMessageIdRef = useRef<string | null>(null)
 	const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null)
@@ -530,6 +533,11 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	useEffect(() => {
 		let cancelled = false
 		requestCounter.current += 1
+		streamAbortRef.current?.abort()
+		activeChatIdRef.current = null
+		messagesRef.current = []
+		streamingChatIdRef.current = null
+		streamingMessagesRef.current = []
 		setChats([])
 		setActiveChatId(null)
 		setMessages([])
@@ -569,6 +577,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		speechRecognitionRef.current?.stop()
 	}, [])
 
+	useEffect(() => {
+		activeChatIdRef.current = activeChatId
+	}, [activeChatId])
+
+	useEffect(() => {
+		messagesRef.current = messages
+	}, [messages])
+
 	// 切换聊天时加载消息
 	useEffect(() => {
 		if (!activeChatId) {
@@ -576,11 +592,19 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			return
 		}
 		// 新建会话后立即发起流式请求时，不再用并发的空消息请求覆盖临时消息与流式占位。
-		if (streamingChatIdRef.current === activeChatId) return
+		if (streamingChatIdRef.current === activeChatId) {
+			const cachedMessages = streamingMessagesRef.current
+			messagesRef.current = cachedMessages
+			setMessages(cachedMessages)
+			return
+		}
 		let cancelled = false
 		api<{ messages: Message[] }>(`/api/content/chats/${activeChatId}/messages`)
 			.then((data) => {
-				if (!cancelled) setMessages(data.messages)
+				if (!cancelled) {
+					messagesRef.current = data.messages
+					setMessages(data.messages)
+				}
 			})
 		return () => {
 			cancelled = true
@@ -596,6 +620,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const handleNewChat = useCallback(() => {
 		if (sending || !user) return
 		requestCounter.current += 1
+		activeChatIdRef.current = null
+		messagesRef.current = []
 		setActiveChatId(null)
 		setMessages([])
 		setInputValue('')
@@ -610,6 +636,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		await api(`/api/content/chats/${deleteChatTarget.id}`, { method: 'DELETE' })
 		setChats((prev) => prev.filter((c) => c.id !== deleteChatTarget.id))
 		if (activeChatId === deleteChatTarget.id) {
+			activeChatIdRef.current = null
+			messagesRef.current = []
 			setActiveChatId(null)
 			setMessages([])
 		}
@@ -679,7 +707,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 				method: 'POST',
 				body: JSON.stringify({ filename: file.name, data }),
 			})
-			addAttachment({ id: crypto.randomUUID(), ...result.attachment, source: 'upload' })
+			addAttachment({ id: createClientId(), ...result.attachment, source: 'upload' })
 		} catch (error) {
 			emitTaskProgress({ title: '图片上传失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
 		} finally {
@@ -756,7 +784,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [draftContent, floatingSelection, setDraftContent])
 
 	const referenceGeneratedImage = useCallback((url: string, alt: string) => {
-		addAttachment({ id: crypto.randomUUID(), url, filename: alt || 'AI 生成图片', source: 'generated' })
+		addAttachment({ id: createClientId(), url, filename: alt || 'AI 生成图片', source: 'generated' })
 		emitTaskProgress({ title: '已引用生成图片', status: 'success', message: '在输入框描述你希望修改的内容' })
 	}, [addAttachment])
 
@@ -808,17 +836,31 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			content: trimmedContent,
 			created_at: new Date().toISOString(),
 		}
-			setMessages((prev) => [...prev, tempMsg])
-			currentUserMessageIdRef.current = tempId
-
-		// 2. AI 占位消息
 		const aiId = 'ai-' + Date.now()
-		setMessages((prev) => [...prev, {
+		const aiPlaceholder: Message = {
 			id: aiId,
 			role: 'assistant',
 			content: '',
 			created_at: new Date().toISOString(),
-		}])
+		}
+		const initialMessages = [
+			...(activeChatIdRef.current === chatId ? messagesRef.current : []),
+			tempMsg,
+			aiPlaceholder,
+		]
+		streamingMessagesRef.current = initialMessages
+		messagesRef.current = initialMessages
+		setMessages(initialMessages)
+		currentUserMessageIdRef.current = tempId
+
+		const updateStreamingMessages = (updater: (current: Message[]) => Message[]) => {
+			const nextMessages = updater(streamingMessagesRef.current)
+			streamingMessagesRef.current = nextMessages
+			if (activeChatIdRef.current === chatId) {
+				messagesRef.current = nextMessages
+				setMessages(nextMessages)
+			}
+		}
 
 			let revealCancelled = false
 			const abortController = new AbortController()
@@ -860,7 +902,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						displayedContent += queuedContent.slice(0, step)
 						queuedContent = queuedContent.slice(step)
 						if (requestId === requestCounter.current) {
-							setMessages((prev) =>
+							updateStreamingMessages((prev) =>
 								prev.map((message) =>
 									message.id === aiId ? { ...message, content: displayedContent } : message
 								)
@@ -894,7 +936,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								break
 								case 'user_message':
 								// 用服务端返回的消息替换临时消息
-									setMessages((prev) =>
+									updateStreamingMessages((prev) =>
 										prev.map((m) => (m.id === tempId ? data.message : m))
 									)
 									currentUserMessageIdRef.current = data.message.id
@@ -912,7 +954,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								accumulatedContent = data.content
 								displayedContent = data.content
 								setThinkingStage('')
-								setMessages((prev) =>
+								updateStreamingMessages((prev) =>
 									prev.map((message) =>
 										message.id === aiId ? { ...message, content: data.content } : message
 									)
@@ -936,16 +978,16 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			streamFinished = true
 			if (revealPromise) await revealPromise
 
-			// 如果用户在此期间切换了聊天，丢弃本次结果
+			// 账号切换或新请求已替代当前任务时，丢弃旧请求的最终 UI 更新。
 			if (requestId !== requestCounter.current) return
 
 			// 用服务端持久化的消息替换占位
 			if (finalMessage) {
-				setMessages((prev) =>
+				updateStreamingMessages((prev) =>
 					prev.map((m) => (m.id === aiId ? finalMessage! : m))
 				)
 			} else if (!accumulatedContent) {
-				setMessages((prev) => prev.filter((m) => m.id !== aiId))
+				updateStreamingMessages((prev) => prev.filter((m) => m.id !== aiId))
 			}
 
 			setModelType(undefined)
@@ -962,7 +1004,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					revealCancelled = true
 					if (error instanceof DOMException && error.name === 'AbortError') {
 						setInterruptedMessageId(currentUserMessageIdRef.current)
-						setMessages((prev) => prev.map((message) =>
+						updateStreamingMessages((prev) => prev.map((message) =>
 							message.id === aiId
 								? { ...message, content: message.content || '已中断本次生成。' }
 								: message
@@ -971,7 +1013,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					}
 				// 保留用户输入，并将 AI 占位改为可见的失败提示
 				const failureMessage = error instanceof Error ? error.message : '生成失败，请稍后重试。'
-				setMessages((prev) =>
+				updateStreamingMessages((prev) =>
 					prev.map((m) =>
 						m.id === aiId
 							? { ...m, content: failureMessage }
@@ -1005,6 +1047,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			})
 			setChats((prev) => [chat, ...prev])
 			streamingChatIdRef.current = chat.id
+			activeChatIdRef.current = chat.id
 			setActiveChatId(chat.id)
 
 			// 再流式发送
@@ -1364,10 +1407,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								chats.map((chat) => (
 									<div
 										key={chat.id}
-										onClick={() => setActiveChatId(chat.id)}
+										onClick={() => {
+											activeChatIdRef.current = chat.id
+											setActiveChatId(chat.id)
+										}}
 										onKeyDown={(e) => {
 											if (e.key === 'Enter' || e.key === ' ') {
 												e.preventDefault()
+												activeChatIdRef.current = chat.id
 												setActiveChatId(chat.id)
 											}
 										}}
