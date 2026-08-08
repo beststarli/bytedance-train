@@ -885,7 +885,6 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					if (!line.startsWith('data: ')) continue
 					try {
 						const data = JSON.parse(line.slice(6))
-
 						switch (data.type) {
 							case 'status':
 								setThinkingStage(data.message)

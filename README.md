@@ -24,6 +24,7 @@
 ### 后端
 
 ### RustFS
+```bash
 rustfs server \
   --address :9000 \
   --console-enable \
@@ -32,6 +33,7 @@ rustfs server \
   --secret-key 123456 \
   --region us-east-1 \
   /Users/beststar/data
+```
 
 ## Bug修复
 ***欢迎在Issue中向我反馈Bug，我会尽快修复。***

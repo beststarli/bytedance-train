@@ -222,7 +222,7 @@ export default function Header({
                         </a>
                         <a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer" className="flex w-full cursor-pointer items-center justify-center gap-2 whitespace-nowrap text-blue-500 transition-colors hover:text-blue-600 hover:underline">
                             <img src="/police-badge.png" alt="公安备案" className="h-5 w-5 shrink-0 object-contain" />
-                            <span>公安备案号：待申请（位置预留）</span>
+                            <span>冀公网安备13040202001131号</span>
                         </a>
                     </div>
                 </div>
