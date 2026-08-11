@@ -6,6 +6,9 @@ const serverPort = process.env.Server_Port || "4001";
 const apiServer = `http://localhost:${serverPort}`;
 
 const nextConfig: NextConfig = {
+  images: {
+    formats: ["image/avif", "image/webp"],
+  },
   async rewrites() {
     return [
       {

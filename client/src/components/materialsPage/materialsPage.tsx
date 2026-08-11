@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react'
 import { Upload, Trash2 } from 'lucide-react'
-import { api } from '@/api/api'
+import { deleteMaterial, getMaterials, uploadMaterial } from '@/api/materials'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { formatSize } from '@/lib/tools'
@@ -36,8 +36,8 @@ export default function MaterialsPage() {
       return
     }
     setLoading(true)
-    api<{ materials: Material[] }>('/api/content/materials')
-      .then((d) => { if (!cancelled?.()) setMaterials(d.materials) })
+    getMaterials<Material>()
+		.then((items) => { if (!cancelled?.()) setMaterials(items) })
       .catch(() => { if (!cancelled?.()) setMaterials([]) })
       .finally(() => { if (!cancelled?.()) setLoading(false) })
   }
@@ -70,10 +70,7 @@ export default function MaterialsPage() {
         reader.readAsDataURL(file)
       })
 
-      await api('/api/content/materials', {
-        method: 'POST',
-        body: JSON.stringify({ filename: file.name, data: base64, type: 'image' }),
-      })
+      await uploadMaterial({ filename: file.name, data: base64, type: 'image' })
       setLoading(true)
       load()
     } catch (error) {
@@ -87,7 +84,7 @@ export default function MaterialsPage() {
     setDeleting(true)
     setDeleteError('')
     try {
-      await api(`/api/content/materials/${pendingDelete.id}`, { method: 'DELETE' })
+      await deleteMaterial(pendingDelete.id)
       setPendingDelete(null)
       setLoading(true)
       load()

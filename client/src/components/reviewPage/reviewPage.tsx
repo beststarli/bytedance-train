@@ -16,7 +16,8 @@ import {
   WandSparkles,
   XCircle,
 } from "lucide-react"
-import { api } from "@/api/api"
+import { applyRewriteProposal, generateReviewRewrites, getReviewDetail, getReviews, rejectRewriteProposal } from "@/api/reviews"
+import { submitWorkReview } from "@/api/works"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -137,8 +138,8 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
     }
     if (!silent) setLoading(true)
     try {
-      const data = await api<{ reviews: ReviewListItem[] }>("/api/content/reviews")
-      setReviews(data.reviews)
+      const items = await getReviews<ReviewListItem>()
+      setReviews(items)
     } catch {
       if (!silent) setReviews([])
     } finally {
@@ -149,7 +150,7 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
   const loadDetail = useCallback(async (id: string, silent = false) => {
     if (!silent) setDetailLoading(true)
     try {
-      const data = await api<DetailPayload>(`/api/content/reviews/${id}`)
+      const data = await getReviewDetail<DetailPayload>(id)
       setDetail(data)
     } catch (error) {
       if (!silent) toast.error(error instanceof Error ? error.message : "审核详情加载失败")
@@ -203,7 +204,7 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
     if (!detail || actionLoading) return
     setActionLoading("rewrite")
     try {
-      await api(`/api/content/review-jobs/${detail.review.id}/rewrite`, { method: "POST" })
+      await generateReviewRewrites(detail.review.id)
       await loadDetail(detail.review.id, true)
       toast.success("AI 已生成替代内容，请审查后选择是否采用")
     } catch (error) {
@@ -217,13 +218,10 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
     if (!detail || actionLoading) return
     setActionLoading(proposal.id)
     try {
-      const result = await api<{ version: { title: string; content: string } }>(
-        `/api/content/rewrite-proposals/${proposal.id}/apply`,
-        { method: "POST" },
-      )
+      const version = await applyRewriteProposal<{ title: string; content: string }>(proposal.id)
       setDetail((current) => current ? {
         ...current,
-        review: { ...current.review, title: result.version.title, content: result.version.content, review_status: "needs_revision" },
+        review: { ...current.review, title: version.title, content: version.content, review_status: "needs_revision" },
         proposals: current.proposals.map((item) => item.id === proposal.id ? { ...item, status: "accepted" } : item),
       } : current)
       await loadReviews(true)
@@ -239,7 +237,7 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
     if (!detail || actionLoading) return
     setActionLoading(`reject:${proposal.id}`)
     try {
-      await api(`/api/content/rewrite-proposals/${proposal.id}/reject`, { method: "POST" })
+      await rejectRewriteProposal(proposal.id)
       setDetail((current) => current ? {
         ...current,
         proposals: current.proposals.map((item) => item.id === proposal.id ? { ...item, status: "rejected" } : item),
@@ -256,7 +254,7 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
     if (!detail || actionLoading) return
     setActionLoading("resubmit")
     try {
-      await api(`/api/content/works/${detail.review.work_id}/submit-review`, { method: "POST", body: "{}" })
+      await submitWorkReview(detail.review.work_id)
       setDetail(null)
       await loadReviews()
       toast.success("新版本已重新进入 AI 审核队列")

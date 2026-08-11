@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import { Bookmark, ChevronDown, Edit3, Eye, FileText, Heart, Plus, Search, Trash2 } from "lucide-react"
-import { api } from "@/api/api"
+import { deleteWork, getWorks, saveWork } from "@/api/works"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -67,8 +67,8 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
       return
     }
     setLoading(true)
-    api<{ works: Work[] }>("/api/content/works")
-      .then((data) => { if (!cancelled) setWorks(data.works) })
+    getWorks<Work>()
+      .then((items) => { if (!cancelled) setWorks(items) })
       .catch(() => { if (!cancelled) setWorks([]) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -96,12 +96,8 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
     if (!pendingEdit || !editor.title.trim() || !editor.content.trim()) return
     setSaving(true)
     try {
-      const path = editor.id ? `/api/content/works/${editor.id}` : "/api/content/works"
-      const data = await api<{ work: Work }>(path, {
-        method: editor.id ? "PUT" : "POST",
-        body: JSON.stringify({ title: editor.title.trim(), content: editor.content.trim(), status: "draft" }),
-      })
-      editor.markSaved(data.work.id)
+      const work = await saveWork<Work>(editor.id, { title: editor.title.trim(), content: editor.content.trim(), status: "draft" })
+      editor.markSaved(work.id)
       const next = pendingEdit
       setPendingEdit(null)
       toast.success("当前内容已保存为草稿")
@@ -117,7 +113,7 @@ export default function WorksPage({ onNavigate }: { onNavigate?: (menu: string) 
     if (!deleteTarget || !user) return
     setSaving(true)
     try {
-      await api(`/api/content/works/${deleteTarget.id}`, { method: "DELETE" })
+      await deleteWork(deleteTarget.id)
       setWorks((items) => items.filter((item) => item.id !== deleteTarget.id))
       setDeleteTarget(null)
     } finally {
