@@ -16,7 +16,8 @@ import {
 	Phone,
 	ShieldCheck,
 } from "lucide-react"
-import { api } from "@/api/api"
+import { getCreatorDashboard, getLatestWorkPerformance } from "@/api/creator"
+import { updateAvatar, updatePassword, updateProfile } from "@/api/login"
 import { useAuthStore } from "@/store/userStore"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -134,7 +135,7 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 	useEffect(() => {
 		if (!user) return
 		let cancelled = false
-		api<DashboardData>("/api/content/creator-dashboard")
+		getCreatorDashboard<DashboardData>()
 			.then((data) => { if (!cancelled) setDashboard(data) })
 			.catch(() => { if (!cancelled) setDashboard(null) })
 		return () => { cancelled = true }
@@ -144,7 +145,7 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 		if (!user) return
 		let cancelled = false
 		setLatestPerformance({ work: null, points: [] })
-		api<LatestPerformance>(`/api/content/creator-dashboard/latest-performance?days=${chartRange}`)
+		getLatestWorkPerformance<LatestPerformance>(chartRange)
 			.then((data) => { if (!cancelled) setLatestPerformance(data) })
 			.catch(() => { if (!cancelled) setLatestPerformance({ work: null, points: [] }) })
 		return () => { cancelled = true }
@@ -158,17 +159,11 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 		}
 		setSaving(true)
 		try {
-			const data = await api<{ user: typeof user }>("/api/auth/profile", {
-				method: "PUT",
-				body: JSON.stringify({ nickname, email }),
-			})
+			const updatedUser = await updateProfile<typeof user>({ nickname, email })
 			if (newPassword) {
-				await api("/api/auth/password", {
-					method: "PUT",
-					body: JSON.stringify({ new_password: newPassword, confirm_password: confirmPassword }),
-				})
+				await updatePassword(newPassword, confirmPassword)
 			}
-			if (data.user && token) setAuth(data.user, token)
+			if (updatedUser && token) setAuth(updatedUser, token)
 			setProfileOpen(false)
 			setNewPassword("")
 			setConfirmPassword("")
@@ -238,11 +233,8 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 			const sourceSize = AVATAR_CROP_SIZE / avatarScale
 			context.drawImage(imageElement, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 512, 512)
 			const croppedImage = canvas.toDataURL("image/jpeg", 0.9)
-			const data = await api<{ user: typeof user }>("/api/auth/avatar", {
-				method: "POST",
-				body: JSON.stringify({ image: croppedImage }),
-			})
-			if (data.user && token) setAuth(data.user, token)
+			const updatedUser = await updateAvatar<typeof user>(croppedImage)
+			if (updatedUser && token) setAuth(updatedUser, token)
 			setAvatarOpen(false)
 			setAvatarSource("")
 			toast.success("头像已更新")
@@ -281,23 +273,6 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 						</section>
 
 						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
-							<div className="mb-5"><h2 className="font-bold">新的创作</h2><p className="mt-1 text-xs text-muted-foreground">选择下一步，直接进入对应工作流</p></div>
-							<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-								{[
-									{ title: "作品管理", desc: "查看、编辑与管理已发布作品", icon: FileText, tone: "bg-red-50 text-red-500", target: "works" },
-									{ title: "素材管理", desc: "整理图片与视觉创作参考", icon: FolderOpen, tone: "bg-blue-50 text-blue-600", target: "materials" },
-									{ title: "审核作品", desc: "检查作品状态与内容安全结果", icon: ShieldCheck, tone: "bg-emerald-50 text-emerald-600", target: "review" },
-									{ title: "创作文章", desc: "进入 AI 协作与内容写作台", icon: FilePenLine, tone: "bg-amber-50 text-amber-600", target: "create" },
-								].map((item) => (
-									<button key={item.title} type="button" onClick={() => onNavigate?.(item.target)} className="focus-red group rounded-md border p-5 text-left transition-colors hover:border-red-200">
-										<span className={`flex h-10 w-10 items-center justify-center rounded-lg ${item.tone}`}><item.icon className="h-5 w-5" /></span>
-										<div className="mt-6 flex items-center justify-between gap-3"><div><h3 className="text-sm font-bold">{item.title}</h3><p className="mt-1.5 text-xs leading-5 text-muted-foreground">{item.desc}</p></div><ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-red-500" /></div>
-									</button>
-								))}
-							</div>
-						</section>
-
-						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
 							<div className="mb-5 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-red-500" /><div><h2 className="font-bold">作品数据看板</h2><p className="mt-1 text-xs text-muted-foreground">最新发布文章的阅读与互动趋势</p></div></div><div className="flex rounded-md bg-muted p-0.5 text-xs"><button type="button" onClick={() => setChartRange(7)} className={`rounded px-2.5 py-1 ${chartRange === 7 ? "bg-card text-red-500 shadow-sm" : "text-muted-foreground"}`}>近7天</button><button type="button" onClick={() => setChartRange(30)} className={`rounded px-2.5 py-1 ${chartRange === 30 ? "bg-card text-red-500 shadow-sm" : "text-muted-foreground"}`}>近30天</button></div></div>
 							<div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
 								<div className="relative min-h-72 overflow-hidden rounded-md border bg-muted">
@@ -320,7 +295,24 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 
 						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
 							<div className="mb-5 flex items-center justify-between"><div><h2 className="font-bold">我的互动</h2><p className="mt-1 text-xs text-muted-foreground">收藏与点赞过的文章</p></div><button type="button" onClick={() => setInteractionType((type) => type === "like" ? "favorite" : "like")} className="flex items-center gap-2 rounded-full bg-muted px-1 py-1 text-xs"><span className={`rounded-full px-3 py-1 ${interactionType === "like" ? "bg-card text-red-500 shadow-sm" : "text-muted-foreground"}`}>点赞</span><span className={`rounded-full px-3 py-1 ${interactionType === "favorite" ? "bg-card text-amber-600 shadow-sm" : "text-muted-foreground"}`}>收藏</span></button></div>
-							{dashboard?.reactions?.some((item) => item.type === interactionType) ? <div className="grid gap-2 md:grid-cols-4">{dashboard.reactions.filter((item) => item.type === interactionType).map((item) => <div key={`${item.id}-${item.type}`} className="flex overflow-hidden rounded-md border"><div className="h-full w-36 shrink-0 bg-muted">{articleCover(item.content) ? <img src={articleCover(item.content)} alt="" className="h-full w-full object-fill" /> : <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">无配图</div>}</div><div className="min-w-0 p-3"><div className="flex items-center gap-1 text-[10px] text-muted-foreground">{item.type === "like" ? <Heart className="h-3 w-3 fill-red-500 text-red-500" /> : <Bookmark className="h-3 w-3 fill-amber-400 text-amber-500" />}{item.type === "like" ? "已点赞" : "已收藏"}</div><h3 className="mt-2 line-clamp-2 text-sm font-semibold">{item.title}</h3><p className="mt-1 text-[10px] text-muted-foreground">阅读 {item.view_count || 0}</p></div></div>)}</div> : <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">还没有{interactionType === "like" ? "点赞" : "收藏"}文章</div>}
+							{dashboard?.reactions?.some((item) => item.type === interactionType) ? <div className="grid max-h-[18.5rem] grid-cols-1 auto-rows-[9rem] gap-2 overflow-y-auto overscroll-contain pr-1 md:grid-cols-2 2xl:grid-cols-4">{dashboard.reactions.filter((item) => item.type === interactionType).map((item) => <div key={`${item.id}-${item.type}`} className="flex h-36 min-w-0 overflow-hidden rounded-md border"><div className="h-full w-36 shrink-0 bg-muted">{articleCover(item.content) ? <img src={articleCover(item.content)} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">无配图</div>}</div><div className="min-w-0 p-3"><div className="flex items-center gap-1 text-[10px] text-muted-foreground">{item.type === "like" ? <Heart className="h-3 w-3 fill-red-500 text-red-500" /> : <Bookmark className="h-3 w-3 fill-amber-400 text-amber-500" />}{item.type === "like" ? "已点赞" : "已收藏"}</div><h3 className="mt-2 line-clamp-2 text-sm font-semibold">{item.title}</h3><p className="mt-1 text-[10px] text-muted-foreground">阅读 {item.view_count || 0}</p></div></div>)}</div> : <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">还没有{interactionType === "like" ? "点赞" : "收藏"}文章</div>}
+						</section>
+
+						<section className="workspace-card rounded-md bg-card p-5 shadow-sm sm:p-6">
+							<div className="mb-5"><h2 className="font-bold">新的创作</h2><p className="mt-1 text-xs text-muted-foreground">选择下一步，直接进入对应工作流</p></div>
+							<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+								{[
+									{ title: "作品管理", desc: "查看、编辑与管理已发布作品", icon: FileText, tone: "bg-red-50 text-red-500", target: "works" },
+									{ title: "素材管理", desc: "整理图片与视觉创作参考", icon: FolderOpen, tone: "bg-blue-50 text-blue-600", target: "materials" },
+									{ title: "审核作品", desc: "检查作品状态与内容安全结果", icon: ShieldCheck, tone: "bg-emerald-50 text-emerald-600", target: "review" },
+									{ title: "创作文章", desc: "进入 AI 协作与内容写作台", icon: FilePenLine, tone: "bg-amber-50 text-amber-600", target: "create" },
+								].map((item) => (
+									<button key={item.title} type="button" onClick={() => onNavigate?.(item.target)} className="focus-red group rounded-md border p-5 text-left transition-colors hover:border-red-200">
+										<span className={`flex h-10 w-10 items-center justify-center rounded-lg ${item.tone}`}><item.icon className="h-5 w-5" /></span>
+										<div className="mt-6 flex items-center justify-between gap-3"><div><h3 className="text-sm font-bold">{item.title}</h3><p className="mt-1.5 text-xs leading-5 text-muted-foreground">{item.desc}</p></div><ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-red-500" /></div>
+									</button>
+								))}
+							</div>
 						</section>
 					</div>
 

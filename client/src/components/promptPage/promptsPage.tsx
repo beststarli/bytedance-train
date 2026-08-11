@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react'
 import { Sparkles, Plus, Pencil, Trash2, FileText, ImageIcon, WandSparkles, Bot, Send, Check, LoaderCircle } from 'lucide-react'
-import { api } from '@/api/api'
+import { deletePrompt, generatePromptTemplate, getPrompts, savePrompt } from '@/api/prompts'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -89,8 +89,8 @@ export default function PromptsPage() {
 			return
 		}
 		setLoading(true)
-		api<{ prompts: Prompt[] }>('/api/content/prompts')
-			.then((d) => { if (!cancelled?.()) setPrompts(d.prompts) })
+		getPrompts<Prompt>()
+			.then((items) => { if (!cancelled?.()) setPrompts(items) })
 			.catch(() => { if (!cancelled?.()) setPrompts([]) })
 			.finally(() => { if (!cancelled?.()) setLoading(false) })
 	}
@@ -109,9 +109,7 @@ export default function PromptsPage() {
 		if (!user || !form.title || !form.content) return
 		setSaving(true)
 		try {
-			const method = editing ? 'PUT' : 'POST'
-			const url = editing ? `/api/content/prompts/${editing.id}` : '/api/content/prompts'
-			await api(url, { method, body: JSON.stringify(form) })
+			await savePrompt(editing?.id || null, form)
 			setShowForm(false)
 			setEditing(null)
 			setForm({ title: '', description: '', content: '', category: 'writing', icon: 'FileText' })
@@ -126,7 +124,7 @@ export default function PromptsPage() {
 
 	const handleDelete = async (id: string) => {
 		if (!user) return
-		await api(`/api/content/prompts/${id}`, { method: 'DELETE' })
+		await deletePrompt(id)
 		load()
 	}
 
@@ -169,10 +167,7 @@ export default function PromptsPage() {
 		setGeneratedTemplate(null)
 		setExecutedSkill(null)
 		try {
-			const data = await api<{ template: GeneratedTemplate; skill: ExecutedSkill }>('/api/content/prompts/generate', {
-				method: 'POST',
-				body: JSON.stringify({ category: form.category, requirement }),
-			})
+			const data = await generatePromptTemplate<{ template: GeneratedTemplate; skill: ExecutedSkill }>(form.category, requirement)
 			setGeneratedTemplate(data.template)
 			setExecutedSkill(data.skill)
 		} catch (error) {

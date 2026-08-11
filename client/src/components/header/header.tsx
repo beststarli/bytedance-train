@@ -26,7 +26,8 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useAuthStore } from '@/store/userStore'
-import { api, logoutSession } from '@/api/api'
+import { logoutSession } from '@/api/api'
+import { getNotifications, searchContent } from '@/api/discovery'
 import { resolveAssetUrl } from '@/lib/asset-url'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import ThemeToggle from '@/components/header/theme-toggle'
@@ -101,8 +102,8 @@ export default function Header({
         const load = () => {
             if (document.visibilityState !== 'visible' || loading) return
             loading = true
-            api<{ notifications: Notification[] }>('/api/content/notifications')
-                .then((data) => { if (!cancelled) setNotifications(data.notifications) })
+            getNotifications<Notification>()
+                .then((items) => { if (!cancelled) setNotifications(items) })
                 .catch(() => { if (!cancelled) setNotifications([]) })
                 .finally(() => { loading = false })
         }
@@ -127,7 +128,7 @@ export default function Header({
         setSearching(true)
         let cancelled = false
         const timer = window.setTimeout(() => {
-            api<SearchResults>(`/api/content/search?q=${encodeURIComponent(keyword)}`)
+            searchContent<SearchResults>(keyword)
                 .then((data) => {
                     if (!cancelled) setResults(data)
                 })

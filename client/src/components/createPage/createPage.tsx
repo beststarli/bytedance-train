@@ -33,13 +33,17 @@ import {
 	Paperclip,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/userStore'
-import { api, getValidAccessToken } from '@/api/api'
+import { createChat, deleteChat, generateChatStream, getChatMessages, getChats, importMessageImage, renameChat, uploadAiAttachment } from '@/api/chats'
+import { getMaterials } from '@/api/materials'
+import { getPrompts } from '@/api/prompts'
+import { saveWork } from '@/api/works'
 import { cn, createClientId } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { emitTaskProgress } from '@/components/taskProgress'
 import { resolveAssetUrl } from '@/lib/asset-url'
 import { useEditorStore } from '@/store/editorStore'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { removeLocalDraft, useDraftAutosave } from '@/hooks/useDraftAutosave'
 
 interface Chat {
 	id: string
@@ -86,6 +90,12 @@ interface FloatingSelection {
 	x: number
 	y: number
 	source: 'assistant' | 'editor'
+}
+
+interface ChatGenerationState {
+	sending: boolean
+	thinkingStage: string
+	generationType: 'text' | 'image'
 }
 
 interface BrowserSpeechRecognition {
@@ -492,9 +502,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const [inputValue, setInputValue] = useState('')
 	const [modelType, setModelType] = useState<string | undefined>(undefined)
 	const [loadingChats, setLoadingChats] = useState(true)
-	const [sending, setSending] = useState(false)
-	const [thinkingStage, setThinkingStage] = useState("")
-	const [activeGenerationType, setActiveGenerationType] = useState<'text' | 'image'>('text')
+	const [generationStates, setGenerationStates] = useState<Record<string, ChatGenerationState>>({})
 	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>('ai')
 	const { id: editingWorkId, title: draftTitle, content: draftContent, setTitle: setDraftTitle, setContent: setDraftContent, markSaved, clear: clearEditor } = useEditorStore()
 	const [publishing, setPublishing] = useState(false)
@@ -509,35 +517,56 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const [uploadingAttachment, setUploadingAttachment] = useState(false)
 	const [listening, setListening] = useState(false)
 	const [floatingSelection, setFloatingSelection] = useState<FloatingSelection | null>(null)
-	const [interruptedMessageId, setInterruptedMessageId] = useState<string | null>(null)
+	const [interruptedMessageIds, setInterruptedMessageIds] = useState<Record<string, string | null>>({})
 	const messagesEndRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	const attachmentInputRef = useRef<HTMLInputElement>(null)
 	const draftEditorRef = useRef<HTMLDivElement>(null)
 	const activeChatIdRef = useRef<string | null>(null)
 	const messagesRef = useRef<Message[]>([])
-	const streamingChatIdRef = useRef<string | null>(null)
-	const streamingMessagesRef = useRef<Message[]>([])
-	const streamAbortRef = useRef<AbortController | null>(null)
-	const currentUserMessageIdRef = useRef<string | null>(null)
+	const messagesByChatRef = useRef<Map<string, Message[]>>(new Map())
+	const generationStatesRef = useRef<Record<string, ChatGenerationState>>({})
+	const streamAbortByChatRef = useRef<Map<string, AbortController>>(new Map())
+	const currentUserMessageIdByChatRef = useRef<Map<string, string>>(new Map())
+	const requestCounterByChatRef = useRef<Map<string, number>>(new Map())
 	const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null)
 	const composingRef = useRef(false)
 	const requestCounter = useRef(0)
+	const activeGeneration = activeChatId ? generationStates[activeChatId] : undefined
+	const sending = activeGeneration?.sending ?? false
+	const thinkingStage = activeGeneration?.thinkingStage ?? ''
+	const activeGenerationType = activeGeneration?.generationType ?? 'text'
+	const interruptedMessageId = activeChatId ? interruptedMessageIds[activeChatId] ?? null : null
 	const promptCategories = promptCategoryDefinitions
 	const importedImageUrls = useMemo(
 		() => new Set(materials.map((material) => material.source_url).filter((url): url is string => Boolean(url))),
 		[materials],
 	)
+	useDraftAutosave(user?.id)
+
+	const updateChatGeneration = useCallback((chatId: string, next: ChatGenerationState) => {
+		generationStatesRef.current = { ...generationStatesRef.current, [chatId]: next }
+		setGenerationStates(generationStatesRef.current)
+	}, [])
+
+	const setInterruptedMessageForChat = useCallback((chatId: string, messageId: string | null) => {
+		setInterruptedMessageIds((current) => ({ ...current, [chatId]: messageId }))
+	}, [])
 
 	// 加载聊天列表 + prompt 模板
 	useEffect(() => {
 		let cancelled = false
 		requestCounter.current += 1
-		streamAbortRef.current?.abort()
+		streamAbortByChatRef.current.forEach((controller) => controller.abort())
 		activeChatIdRef.current = null
 		messagesRef.current = []
-		streamingChatIdRef.current = null
-		streamingMessagesRef.current = []
+		messagesByChatRef.current.clear()
+		generationStatesRef.current = {}
+		streamAbortByChatRef.current.clear()
+		currentUserMessageIdByChatRef.current.clear()
+		requestCounterByChatRef.current.clear()
+		setGenerationStates({})
+		setInterruptedMessageIds({})
 		setChats([])
 		setActiveChatId(null)
 		setMessages([])
@@ -550,18 +579,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			setRenamingChat(null)
 			setAttachments([])
 			setFloatingSelection(null)
-			setInterruptedMessageId(null)
 		setLoadingChats(!!user)
 		if (!user) return
 		Promise.all([
-			api<{ chats: Chat[] }>('/api/content/chats'),
-			api<{ prompts: Prompt[] }>('/api/content/prompts'),
-			api<{ materials: Material[] }>('/api/content/materials'),
-		]).then(([chatData, promptData, materialData]) => {
+			getChats<Chat>(),
+			getPrompts<Prompt>(),
+			getMaterials<Material>(),
+		]).then(([chatItems, promptItems, materialItems]) => {
 			if (cancelled) return
-			setChats(chatData.chats)
-			setPrompts(promptData.prompts)
-			setMaterials(materialData.materials)
+			setChats(chatItems)
+			setPrompts(promptItems)
+			setMaterials(materialItems)
 		}).catch(() => {
 			if (!cancelled) {
 				setChats([])
@@ -573,7 +601,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [user?.id])
 
 	useEffect(() => () => {
-		streamAbortRef.current?.abort()
+		streamAbortByChatRef.current.forEach((controller) => controller.abort())
 		speechRecognitionRef.current?.stop()
 	}, [])
 
@@ -588,22 +616,24 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	// 切换聊天时加载消息
 	useEffect(() => {
 		if (!activeChatId) {
+			messagesRef.current = []
 			setMessages([])
 			return
 		}
-		// 新建会话后立即发起流式请求时，不再用并发的空消息请求覆盖临时消息与流式占位。
-		if (streamingChatIdRef.current === activeChatId) {
-			const cachedMessages = streamingMessagesRef.current
+		// 生成中的会话直接恢复独立缓存，避免其他会话消息覆盖流式占位与进度。
+		if (generationStatesRef.current[activeChatId]?.sending) {
+			const cachedMessages = messagesByChatRef.current.get(activeChatId) || []
 			messagesRef.current = cachedMessages
 			setMessages(cachedMessages)
 			return
 		}
 		let cancelled = false
-		api<{ messages: Message[] }>(`/api/content/chats/${activeChatId}/messages`)
-			.then((data) => {
+		getChatMessages<Message>(activeChatId)
+			.then((chatMessages) => {
 				if (!cancelled) {
-					messagesRef.current = data.messages
-					setMessages(data.messages)
+					messagesByChatRef.current.set(activeChatId, chatMessages)
+					messagesRef.current = chatMessages
+					setMessages(chatMessages)
 				}
 			})
 		return () => {
@@ -618,8 +648,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 	// 回到新对话起始页；首次发送时再创建服务端会话，避免产生空对话。
 	const handleNewChat = useCallback(() => {
-		if (sending || !user) return
-		requestCounter.current += 1
+		if (!user) return
 		activeChatIdRef.current = null
 		messagesRef.current = []
 		setActiveChatId(null)
@@ -628,12 +657,12 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setModelType(undefined)
 		setSelectedPromptCategory(null)
 		requestAnimationFrame(() => inputRef.current?.focus())
-	}, [sending, user])
+	}, [user])
 
 	// 删除聊天
 	const handleDeleteChat = useCallback(async () => {
 		if (!deleteChatTarget) return
-		await api(`/api/content/chats/${deleteChatTarget.id}`, { method: 'DELETE' })
+		await deleteChat(deleteChatTarget.id)
 		setChats((prev) => prev.filter((c) => c.id !== deleteChatTarget.id))
 		if (activeChatId === deleteChatTarget.id) {
 			activeChatIdRef.current = null
@@ -641,6 +670,20 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			setActiveChatId(null)
 			setMessages([])
 		}
+		messagesByChatRef.current.delete(deleteChatTarget.id)
+		streamAbortByChatRef.current.get(deleteChatTarget.id)?.abort()
+		streamAbortByChatRef.current.delete(deleteChatTarget.id)
+		currentUserMessageIdByChatRef.current.delete(deleteChatTarget.id)
+		requestCounterByChatRef.current.delete(deleteChatTarget.id)
+		const nextGenerationStates = { ...generationStatesRef.current }
+		delete nextGenerationStates[deleteChatTarget.id]
+		generationStatesRef.current = nextGenerationStates
+		setGenerationStates(nextGenerationStates)
+		setInterruptedMessageIds((current) => {
+			const next = { ...current }
+			delete next[deleteChatTarget.id]
+			return next
+		})
 		setDeleteChatTarget(null)
 	}, [activeChatId, deleteChatTarget])
 
@@ -652,10 +695,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const saveChatRename = useCallback(async () => {
 		if (!renamingChat || !renameValue.trim()) return
 		try {
-			const { chat } = await api<{ chat: Chat }>(`/api/content/chats/${renamingChat.id}`, {
-				method: 'PATCH',
-				body: JSON.stringify({ title: renameValue.trim() }),
-			})
+			const chat = await renameChat<Chat>(renamingChat.id, renameValue.trim())
 			setChats((current) => current.map((item) => item.id === chat.id ? chat : item))
 			setRenamingChat(null)
 			emitTaskProgress({ title: '会话已重命名', status: 'success' })
@@ -703,11 +743,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 				reader.onerror = () => reject(new Error('读取图片失败'))
 				reader.readAsDataURL(file)
 			})
-			const result = await api<{ attachment: { url: string; filename: string } }>('/api/content/ai-attachments', {
-				method: 'POST',
-				body: JSON.stringify({ filename: file.name, data }),
-			})
-			addAttachment({ id: createClientId(), ...result.attachment, source: 'upload' })
+			const attachment = await uploadAiAttachment<{ url: string; filename: string }>({ filename: file.name, data })
+			addAttachment({ id: createClientId(), ...attachment, source: 'upload' })
 		} catch (error) {
 			emitTaskProgress({ title: '图片上传失败', status: 'error', message: error instanceof Error ? error.message : '请稍后重试' })
 		} finally {
@@ -764,10 +801,11 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [listening])
 
 	const stopGeneration = useCallback(() => {
-		if (!sending) return
-		setInterruptedMessageId(currentUserMessageIdRef.current)
-		streamAbortRef.current?.abort()
-	}, [sending])
+		const chatId = activeChatIdRef.current
+		if (!chatId || !generationStatesRef.current[chatId]?.sending) return
+		setInterruptedMessageForChat(chatId, currentUserMessageIdByChatRef.current.get(chatId) || null)
+		streamAbortByChatRef.current.get(chatId)?.abort()
+	}, [setInterruptedMessageForChat])
 
 	const insertSelectedText = useCallback(() => {
 		if (!floatingSelection) return
@@ -816,17 +854,21 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 	// ===== SSE 流式发送消息（文本 / 图片通用） =====
 	const sendStreamingMessage = useCallback(async (chatId: string, content: string, referencedImages: ImageAttachment[] = []): Promise<void> => {
-		if (sending || !content.trim()) return
+		if (generationStatesRef.current[chatId]?.sending || !content.trim()) return
 
 		const trimmedContent = content.trim()
+		const generationType = referencedImages.length || modelType === 'image' ? 'image' : 'text'
 			setInputValue('')
 			setAttachments([])
-		setSending(true)
-		setActiveGenerationType(modelType === 'image' ? 'image' : 'text')
-		setThinkingStage(modelType === 'image' ? 'AI 正在处理图片' : 'AI 正在思考')
-		streamingChatIdRef.current = chatId
+		updateChatGeneration(chatId, {
+			sending: true,
+			generationType,
+			thinkingStage: generationType === 'image' ? 'AI 正在处理图片' : 'AI 正在思考',
+		})
 
-		const requestId = ++requestCounter.current
+		const sessionId = requestCounter.current
+		const requestId = (requestCounterByChatRef.current.get(chatId) || 0) + 1
+		requestCounterByChatRef.current.set(chatId, requestId)
 
 		// 1. 临时用户消息
 		const tempId = 'temp-' + Date.now()
@@ -844,18 +886,20 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			created_at: new Date().toISOString(),
 		}
 		const initialMessages = [
-			...(activeChatIdRef.current === chatId ? messagesRef.current : []),
+			...(messagesByChatRef.current.get(chatId) || (activeChatIdRef.current === chatId ? messagesRef.current : [])),
 			tempMsg,
 			aiPlaceholder,
 		]
-		streamingMessagesRef.current = initialMessages
-		messagesRef.current = initialMessages
-		setMessages(initialMessages)
-		currentUserMessageIdRef.current = tempId
+		messagesByChatRef.current.set(chatId, initialMessages)
+		if (activeChatIdRef.current === chatId) {
+			messagesRef.current = initialMessages
+			setMessages(initialMessages)
+		}
+		currentUserMessageIdByChatRef.current.set(chatId, tempId)
 
 		const updateStreamingMessages = (updater: (current: Message[]) => Message[]) => {
-			const nextMessages = updater(streamingMessagesRef.current)
-			streamingMessagesRef.current = nextMessages
+			const nextMessages = updater(messagesByChatRef.current.get(chatId) || [])
+			messagesByChatRef.current.set(chatId, nextMessages)
 			if (activeChatIdRef.current === chatId) {
 				messagesRef.current = nextMessages
 				setMessages(nextMessages)
@@ -864,20 +908,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 			let revealCancelled = false
 			const abortController = new AbortController()
-			streamAbortRef.current = abortController
+			streamAbortByChatRef.current.set(chatId, abortController)
 			try {
-			const token = await getValidAccessToken()
-			const response = await fetch(`/api/content/chats/${chatId}/generate-stream`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					...(token ? { Authorization: `Bearer ${token}` } : {}),
-				},
-					body: JSON.stringify({ content: trimmedContent, model_type: referencedImages.length ? 'image' : modelType, attachments: referencedImages }),
-					signal: abortController.signal,
+			const response = await generateChatStream(chatId, {
+				content: trimmedContent,
+				modelType: referencedImages.length ? 'image' : modelType,
+				attachments: referencedImages,
+				signal: abortController.signal,
 			})
-
-			if (!response.ok) throw new Error('请求失败')
 
 			const reader = response.body!.getReader()
 			const decoder = new TextDecoder()
@@ -901,7 +939,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						const step = queuedContent.length > 600 ? 12 : queuedContent.length > 200 ? 6 : queuedContent.length > 60 ? 3 : 1
 						displayedContent += queuedContent.slice(0, step)
 						queuedContent = queuedContent.slice(step)
-						if (requestId === requestCounter.current) {
+						if (
+							sessionId === requestCounter.current
+							&& requestId === requestCounterByChatRef.current.get(chatId)
+						) {
 							updateStreamingMessages((prev) =>
 								prev.map((message) =>
 									message.id === aiId ? { ...message, content: displayedContent } : message
@@ -928,23 +969,26 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					try {
 						const data = JSON.parse(line.slice(6))
 						switch (data.type) {
-							case 'status':
-								setThinkingStage(data.message)
-								if (data.model_type === 'text' || data.model_type === 'image') {
-									setActiveGenerationType(data.model_type)
-								}
+						case 'status':
+								updateChatGeneration(chatId, {
+									sending: true,
+									thinkingStage: data.message,
+									generationType: data.model_type === 'image' ? 'image' : generationStatesRef.current[chatId]?.generationType || generationType,
+								})
 								break
 								case 'user_message':
 								// 用服务端返回的消息替换临时消息
 									updateStreamingMessages((prev) =>
 										prev.map((m) => (m.id === tempId ? data.message : m))
 									)
-									currentUserMessageIdRef.current = data.message.id
-									setInterruptedMessageId((current) => current === tempId ? data.message.id : current)
+									currentUserMessageIdByChatRef.current.set(chatId, data.message.id)
+									setInterruptedMessageIds((current) => current[chatId] === tempId
+										? { ...current, [chatId]: data.message.id }
+										: current)
 									break
 
 							case 'chunk':
-								setThinkingStage('AI 正在思考')
+								updateChatGeneration(chatId, { sending: true, thinkingStage: 'AI 正在思考', generationType })
 								accumulatedContent += data.content
 								queuedContent += data.content
 								startReveal()
@@ -953,7 +997,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 							case 'image':
 								accumulatedContent = data.content
 								displayedContent = data.content
-								setThinkingStage('')
+								updateChatGeneration(chatId, { sending: true, thinkingStage: '', generationType: 'image' })
 								updateStreamingMessages((prev) =>
 									prev.map((message) =>
 										message.id === aiId ? { ...message, content: data.content } : message
@@ -978,8 +1022,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 			streamFinished = true
 			if (revealPromise) await revealPromise
 
-			// 账号切换或新请求已替代当前任务时，丢弃旧请求的最终 UI 更新。
-			if (requestId !== requestCounter.current) return
+			// 账号切换或同一会话的新请求已替代当前任务时，丢弃旧请求的最终 UI 更新。
+			if (sessionId !== requestCounter.current || requestId !== requestCounterByChatRef.current.get(chatId)) return
 
 			// 用服务端持久化的消息替换占位
 			if (finalMessage) {
@@ -990,20 +1034,18 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 				updateStreamingMessages((prev) => prev.filter((m) => m.id !== aiId))
 			}
 
-			setModelType(undefined)
-			setThinkingStage('')
-			streamingChatIdRef.current = null
+			if (activeChatIdRef.current === chatId) setModelType(undefined)
 			// 刷新聊天列表（标题可能已更新）
-			const [chatData, materialData] = await Promise.all([
-				api<{ chats: Chat[] }>('/api/content/chats'),
-				api<{ materials: Material[] }>('/api/content/materials'),
+			const [chatItems, materialItems] = await Promise.all([
+				getChats<Chat>(),
+				getMaterials<Material>(),
 			])
-			setChats(chatData.chats)
-			setMaterials(materialData.materials)
+			setChats(chatItems)
+			setMaterials(materialItems)
 				} catch (error) {
 					revealCancelled = true
 					if (error instanceof DOMException && error.name === 'AbortError') {
-						setInterruptedMessageId(currentUserMessageIdRef.current)
+						setInterruptedMessageForChat(chatId, currentUserMessageIdByChatRef.current.get(chatId) || null)
 						updateStreamingMessages((prev) => prev.map((message) =>
 							message.id === aiId
 								? { ...message, content: message.content || '已中断本次生成。' }
@@ -1021,12 +1063,12 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 				)
 			)
 		} finally {
-			setSending(false)
-				setThinkingStage('')
-				streamingChatIdRef.current = null
-				streamAbortRef.current = null
+			if (requestId === requestCounterByChatRef.current.get(chatId)) {
+				updateChatGeneration(chatId, { sending: false, thinkingStage: '', generationType })
+				streamAbortByChatRef.current.delete(chatId)
 			}
-		}, [sending, modelType])
+			}
+		}, [modelType, setInterruptedMessageForChat, updateChatGeneration])
 
 	// 发送消息（已有聊天）
 	const handleSend = useCallback(async () => {
@@ -1041,12 +1083,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 		try {
 			// 先创建聊天
-			const { chat } = await api<{ chat: Chat }>('/api/content/chats', {
-				method: 'POST',
-				body: JSON.stringify({ title: '新对话' }),
-			})
+			const chat = await createChat<Chat>()
 			setChats((prev) => [chat, ...prev])
-			streamingChatIdRef.current = chat.id
 			activeChatIdRef.current = chat.id
 			setActiveChatId(chat.id)
 
@@ -1116,10 +1154,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const importImageToMaterials = useCallback(async (messageId: string, url: string) => {
 		setImportingImageUrls((current) => new Set(current).add(url))
 		try {
-			const data = await api<{ material: Material; already_exists: boolean }>(`/api/content/messages/${messageId}/import-image`, {
-				method: 'POST',
-				body: JSON.stringify({ url }),
-			})
+			const data = await importMessageImage<Material>(messageId, url)
 			setMaterials((current) => {
 				const withoutDuplicate = current.filter((material) => material.id !== data.material.id)
 				return [data.material, ...withoutDuplicate]
@@ -1200,11 +1235,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setPublishing(true)
 		emitTaskProgress({ title: status === 'published' ? '正在提交 AI 审核' : '正在保存草稿', status: 'running', message: status === 'published' ? '正在创建内容版本与审核任务' : '正在同步内容与作品数据' })
 		try {
-			const data = await api<{ work: { id: string } }>(editingWorkId ? `/api/content/works/${editingWorkId}` : '/api/content/works', {
-				method: editingWorkId ? 'PUT' : 'POST',
-				body: JSON.stringify({ title: draftTitle.trim(), content: draftContent.trim(), status }),
-			})
-			markSaved(data.work.id)
+			const work = await saveWork<{ id: string }>(editingWorkId, { title: draftTitle.trim(), content: draftContent.trim(), status })
+			markSaved(work.id)
+			if (status === 'published' && user) removeLocalDraft(user.id)
 			emitTaskProgress({ title: status === 'published' ? '已进入审核队列' : '草稿保存成功', status: 'success', message: status === 'published' ? '审核通过后文章会自动发布' : '内容已同步' })
 			if (status === 'published') {
 				clearEditor()
@@ -1230,16 +1263,14 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		if (!user) return
 		setClearingEditor(true)
 		try {
-			const data = await api<{ work: { id: string } }>(editingWorkId ? `/api/content/works/${editingWorkId}` : '/api/content/works', {
-				method: editingWorkId ? 'PUT' : 'POST',
-				body: JSON.stringify({
+			const work = await saveWork<{ id: string }>(editingWorkId, {
 					title: draftTitle.trim() || '未输入标题',
 					content: draftContent.trim(),
 					status: 'draft',
-				}),
 			})
-			markSaved(data.work.id)
+			markSaved(work.id)
 			clearEditor()
+			removeLocalDraft(user.id)
 			setShowClearEditorDialog(false)
 			emitTaskProgress({ title: '草稿已保存，写作台已清空', status: 'success', message: '可在作品管理中继续编辑' })
 		} catch (error) {
@@ -1251,6 +1282,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 
 	const discardAndClear = () => {
 		clearEditor()
+		if (user) removeLocalDraft(user.id)
 		setShowClearEditorDialog(false)
 		emitTaskProgress({ title: '内容已丢弃，写作台已清空', status: 'success' })
 	}
@@ -1345,15 +1377,15 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					</div>
 					<div className=" flex flex-wrap items-center gap-1">
 						{[
-							{ label: "一级标题", icon: Heading1, action: () => insertFormatting("# ", "", "一级标题") },
-							{ label: "二级标题", icon: Heading2, action: () => insertFormatting("## ", "", "二级标题") },
-							{ label: "加粗", icon: Bold, action: () => insertFormatting("**", "**", "加粗文本") },
-							{ label: "斜体", icon: Italic, action: () => insertFormatting("*", "*", "斜体文本") },
-							{ label: "引用", icon: Quote, action: () => insertFormatting("> ", "", "引用内容") },
-							{ label: "无序列表", icon: List, action: () => insertFormatting("- ", "", "列表项") },
-							{ label: "链接", icon: Link2, action: () => insertFormatting("[", "](https://)", "链接文字") },
-							{ label: "行内代码", icon: Code2, action: () => insertFormatting("`", "`", "代码") },
-						].map((tool) => <button key={tool.label} disabled={!isLoggedIn} type="button" title={tool.label} aria-label={tool.label} onMouseDown={(event) => event.preventDefault()} onClick={tool.action} className="focus-red flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"><tool.icon className="h-4 w-4" /></button>)}
+							{ label: "一级标题", icon: Heading1, before: "# ", after: "", placeholder: "一级标题" },
+							{ label: "二级标题", icon: Heading2, before: "## ", after: "", placeholder: "二级标题" },
+							{ label: "加粗", icon: Bold, before: "**", after: "**", placeholder: "加粗文本" },
+							{ label: "斜体", icon: Italic, before: "*", after: "*", placeholder: "斜体文本" },
+							{ label: "引用", icon: Quote, before: "> ", after: "", placeholder: "引用内容" },
+							{ label: "无序列表", icon: List, before: "- ", after: "", placeholder: "列表项" },
+							{ label: "链接", icon: Link2, before: "[", after: "](https://)", placeholder: "链接文字" },
+							{ label: "行内代码", icon: Code2, before: "`", after: "`", placeholder: "代码" },
+						].map((tool) => <button key={tool.label} disabled={!isLoggedIn} type="button" title={tool.label} aria-label={tool.label} onMouseDown={(event) => event.preventDefault()} onClick={() => insertFormatting(tool.before, tool.after, tool.placeholder)} className="focus-red flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"><tool.icon className="h-4 w-4" /></button>)}
 						<span className="ml-auto text-[10px] text-muted-foreground">可将下方素材拖入正文</span>
 					</div>
 				</div>
@@ -1553,7 +1585,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 																		onClick={() => {
 																			const withoutImages = msg.content.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, '').trim()
 																			setInputValue(withoutImages)
-																			setInterruptedMessageId(null)
+																			if (activeChatId) setInterruptedMessageForChat(activeChatId, null)
 																			requestAnimationFrame(() => inputRef.current?.focus())
 																		}}
 																		className="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-white/25"

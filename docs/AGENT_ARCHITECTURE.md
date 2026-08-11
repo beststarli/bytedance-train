@@ -13,7 +13,7 @@ HTTP / SSE API
   └─ Agent Runtime
       ├─ WorkflowRunner：步骤编排、状态转换、失败记录
       ├─ ModelGateway：DeepSeek / 火山方舟 OpenAI 兼容接口
-      ├─ RunStore：agent_runs / agent_steps / agent_events
+      ├─ RunStore：MongoDB agent_runs / agent_steps / agent_events
       ├─ Tools
       │   └─ PolicyRetriever：审核规则与知识检索
       └─ Workflows
@@ -83,7 +83,8 @@ queued → running → completed
 - `review_findings`：类别、严重级别、置信度、命中片段、原因和建议。
 - `rewrite_proposals`：原片段、替代片段、用户决定和对应 Agent Run。
 - `review_policies`：可维护的审核政策知识。
-- `agent_runs / agent_steps / agent_events`：统一 Agent 可观测性。
+- MongoDB `agent_runs / agent_steps / agent_events`：统一 Agent 可观测性；PostgreSQL
+  旧表仅作为历史回填和回滚来源，不再接收新轨迹。
 
 ## API
 

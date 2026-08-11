@@ -52,6 +52,21 @@ async function request(path: string, options: RequestInit | undefined, token: st
 }
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+    const res = await apiResponse(path, options)
+    const data = await res.json().catch(() => ({}))
+
+    if (!res.ok) {
+        throw new Error(data.error || '请求失败')
+    }
+
+    return data
+}
+
+/**
+ * 返回原始响应，供 SSE、文件流等非 JSON 接口使用。
+ * 鉴权、凭证携带与 access token 刷新仍统一由接口层负责。
+ */
+export async function apiResponse(path: string, options?: RequestInit): Promise<Response> {
     let token = useAuthStore.getState().token
     let res = await request(path, options, token)
 
@@ -60,13 +75,8 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
         if (token) res = await request(path, options, token)
     }
 
-    const data = await res.json().catch(() => ({}))
 
-    if (!res.ok) {
-        throw new Error(data.error || '请求失败')
-    }
-
-    return data
+    return res
 }
 
 function isExpiring(token: string) {

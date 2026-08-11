@@ -110,7 +110,7 @@ const MIGRATIONS_SQL = `
 		work_id UUID NOT NULL REFERENCES works(id) ON DELETE CASCADE,
 		work_version_id UUID NOT NULL REFERENCES work_versions(id) ON DELETE CASCADE,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-		agent_run_id UUID REFERENCES agent_runs(id) ON DELETE SET NULL,
+		agent_run_id UUID,
 		status VARCHAR(24) NOT NULL DEFAULT 'queued',
 		decision VARCHAR(24),
 		risk_score DECIMAL(5,2),
@@ -144,7 +144,7 @@ const MIGRATIONS_SQL = `
 		review_job_id UUID NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
 		finding_id UUID REFERENCES review_findings(id) ON DELETE CASCADE,
 		work_version_id UUID NOT NULL REFERENCES work_versions(id) ON DELETE CASCADE,
-		agent_run_id UUID REFERENCES agent_runs(id) ON DELETE SET NULL,
+		agent_run_id UUID,
 		original_content TEXT NOT NULL,
 		replacement_content TEXT NOT NULL,
 		reason TEXT,
@@ -152,7 +152,10 @@ const MIGRATIONS_SQL = `
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		decided_at TIMESTAMPTZ
 	);
-	ALTER TABLE rewrite_proposals ADD COLUMN IF NOT EXISTS agent_run_id UUID REFERENCES agent_runs(id) ON DELETE SET NULL;
+	ALTER TABLE rewrite_proposals ADD COLUMN IF NOT EXISTS agent_run_id UUID;
+	-- Agent 轨迹已迁移至 MongoDB；关系库只保留 UUID 引用，不能建立跨数据库外键。
+	ALTER TABLE review_jobs DROP CONSTRAINT IF EXISTS review_jobs_agent_run_id_fkey;
+	ALTER TABLE rewrite_proposals DROP CONSTRAINT IF EXISTS rewrite_proposals_agent_run_id_fkey;
 	CREATE TABLE IF NOT EXISTS review_policies (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		code VARCHAR(80) UNIQUE NOT NULL,

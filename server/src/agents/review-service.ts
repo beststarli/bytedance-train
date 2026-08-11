@@ -3,6 +3,7 @@ import { AgentModelGateway } from './core/model-gateway'
 import { runContentReviewWorkflow } from './workflows/content-review'
 import { createAgentState } from './core/run-store'
 import { WorkflowRunner } from './core/workflow'
+import { insertAgentEvent, updateAgentRun } from './core/agent-store'
 
 interface SubmitReviewInput {
 	userId: string
@@ -18,12 +19,36 @@ function asErrorMessage(error: unknown) {
 	return error instanceof Error ? error.message : '审核工作流执行失败'
 }
 
+async function syncProposalDecision(
+	runId: string,
+	eventType: 'proposal_accepted' | 'proposal_rejected',
+	proposalId: string,
+	completed: boolean,
+) {
+	try {
+		await insertAgentEvent(runId, eventType, { proposalId })
+		if (completed) {
+			await updateAgentRun(runId, {
+				status: 'completed',
+				currentStep: eventType === 'proposal_accepted' ? 'user_approved' : 'user_decided',
+				completedAt: new Date(),
+			})
+		}
+	} catch (error) {
+		// PostgreSQL 中的用户决定已经提交，轨迹同步失败不能伪装成业务事务失败。
+		console.error(`[Agent Run ${runId}] 用户决定轨迹同步失败：`, error)
+	}
+}
+
 export async function submitWorkForReview(input: SubmitReviewInput) {
 	const title = input.title.trim()
 	const content = input.content.trim()
 	if (!title || !content) throw new Error('标题和正文不能为空')
 	if (title.length > 200) throw new Error('标题不能超过 200 个字符')
 	if (content.length > 100_000) throw new Error('正文过长，请控制在 10 万个字符以内')
+	const agentState = await createAgentState(input.userId, 'content_review', {
+		workId: input.workId || null,
+	})
 	const client = await pool.connect()
 	try {
 		await client.query('BEGIN')
@@ -76,22 +101,20 @@ export async function submitWorkForReview(input: SubmitReviewInput) {
 			 WHERE id = $4`,
 			[version.id, title, content, workId],
 		)
-		const { rows: runs } = await client.query(
-			`INSERT INTO agent_runs (user_id, task_type, status, current_step, input)
-			 VALUES ($1, 'content_review', 'queued', 'queued', $2::jsonb)
-			 RETURNING *`,
-			[input.userId, JSON.stringify({ workId, versionId: version.id })],
-		)
+		await updateAgentRun(agentState.runId, { input: { workId, versionId: version.id } })
 		const { rows: jobs } = await client.query(
 			`INSERT INTO review_jobs (work_id, work_version_id, user_id, agent_run_id, status)
 			 VALUES ($1, $2, $3, $4, 'queued') RETURNING *`,
-			[workId, version.id, input.userId, runs[0].id],
+			[workId, version.id, input.userId, agentState.runId],
 		)
 		await client.query('COMMIT')
 		enqueueReviewJob(jobs[0].id)
-		return { workId, version, reviewJob: jobs[0], agentRun: runs[0] }
+		return { workId, version, reviewJob: jobs[0], agentRun: agentState }
 	} catch (error) {
 		await client.query('ROLLBACK')
+		await updateAgentRun(agentState.runId, {
+			status: 'failed', error: asErrorMessage(error), completedAt: new Date(),
+		}).catch(() => undefined)
 		throw error
 	} finally {
 		client.release()
@@ -210,10 +233,7 @@ export async function runReviewJob(jobId: string) {
 				[job.work_id],
 			),
 			job.agent_run_id
-				? pool.query(
-					`UPDATE agent_runs SET status = 'failed', error = $1, completed_at = NOW(), updated_at = NOW() WHERE id = $2`,
-					[message, job.agent_run_id],
-				)
+				? updateAgentRun(job.agent_run_id, { status: 'failed', error: message, completedAt: new Date() })
 				: Promise.resolve(),
 		])
 		console.error(`[Review Agent ${jobId}]`, error)
@@ -329,22 +349,13 @@ export async function applyRewriteProposal(proposalId: string, userId: string) {
 			[proposalId],
 		)
 		if (proposal.agent_run_id) {
-			await client.query(
-				`UPDATE agent_runs
-				 SET status = 'completed', current_step = 'user_approved',
-					 updated_at = NOW(), completed_at = NOW()
-				 WHERE id = $1
-				   AND NOT EXISTS (
-					   SELECT 1 FROM rewrite_proposals
-					   WHERE agent_run_id = $1 AND status = 'pending'
-				   )`,
+			const { rows: pending } = await client.query(
+				`SELECT EXISTS(
+					SELECT 1 FROM rewrite_proposals WHERE agent_run_id = $1 AND status = 'pending'
+				) AS has_pending`,
 				[proposal.agent_run_id],
 			)
-			await client.query(
-				`INSERT INTO agent_events (run_id, event_type, payload)
-				 VALUES ($1, 'proposal_accepted', $2::jsonb)`,
-				[proposal.agent_run_id, JSON.stringify({ proposalId })],
-			)
+			proposal.agent_run_completed = !pending[0].has_pending
 		}
 		await client.query(
 			`UPDATE works
@@ -356,6 +367,11 @@ export async function applyRewriteProposal(proposalId: string, userId: string) {
 			[versions[0].id, latest.title, content, proposal.work_id],
 		)
 		await client.query('COMMIT')
+		if (proposal.agent_run_id) {
+			await syncProposalDecision(
+				proposal.agent_run_id, 'proposal_accepted', proposalId, proposal.agent_run_completed,
+			)
+		}
 		return { workId: proposal.work_id, version: versions[0] }
 	} catch (error) {
 		await client.query('ROLLBACK')
@@ -385,24 +401,20 @@ export async function rejectRewriteProposal(proposalId: string, userId: string) 
 			[proposalId],
 		)
 		if (proposal.agent_run_id) {
-			await client.query(
-				`INSERT INTO agent_events (run_id, event_type, payload)
-				 VALUES ($1, 'proposal_rejected', $2::jsonb)`,
-				[proposal.agent_run_id, JSON.stringify({ proposalId })],
-			)
-			await client.query(
-				`UPDATE agent_runs
-				 SET status = 'completed', current_step = 'user_decided',
-					 updated_at = NOW(), completed_at = NOW()
-				 WHERE id = $1
-				   AND NOT EXISTS (
-					   SELECT 1 FROM rewrite_proposals
-					   WHERE agent_run_id = $1 AND status = 'pending'
-				   )`,
+			const { rows: pending } = await client.query(
+				`SELECT EXISTS(
+					SELECT 1 FROM rewrite_proposals WHERE agent_run_id = $1 AND status = 'pending'
+				) AS has_pending`,
 				[proposal.agent_run_id],
 			)
+			proposal.agent_run_completed = !pending[0].has_pending
 		}
 		await client.query('COMMIT')
+		if (proposal.agent_run_id) {
+			await syncProposalDecision(
+				proposal.agent_run_id, 'proposal_rejected', proposalId, proposal.agent_run_completed,
+			)
+		}
 		return { proposalId, status: 'rejected' as const }
 	} catch (error) {
 		await client.query('ROLLBACK')

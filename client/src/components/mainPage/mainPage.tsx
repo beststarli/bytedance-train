@@ -1,6 +1,7 @@
 "use client"
 
-import React, { useEffect, useState } from "react"
+import Image from "next/image"
+import React, { useEffect, useRef, useState } from "react"
 import {
 	ArrowRight,
 	Bookmark,
@@ -12,7 +13,7 @@ import {
 	Plus,
 	SlidersHorizontal,
 } from "lucide-react"
-import { api } from "@/api/api"
+import { FeedSort, getFeed, getFeedWork, toggleFeedReaction } from "@/api/feed"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -24,8 +25,7 @@ import {
 	DropdownMenuRadioItem,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-
-type FeedSort = "new" | "hot" | "likes"
+import type { FeedItem, HomeInitialData, HotNewsItem } from "@/types/home"
 
 const feedSortLabels: Record<FeedSort, string> = {
 	new: "最新发布",
@@ -33,31 +33,10 @@ const feedSortLabels: Record<FeedSort, string> = {
 	likes: "最多点赞",
 }
 
-interface FeedItem {
-	id: string
-	title: string
-	content: string
-	quality_score: number | null
-	view_count: number
-	created_at: string
-	nickname: string
-	like_count?: number
-	favorite_count?: number
-	liked?: boolean
-	favorited?: boolean
-}
-
-interface HotNewsItem {
-	title: string
-	description?: string
-	url: string
-	publishedAt?: string
-	source?: { name?: string }
-}
-
 interface MainPageProps {
 	onNavigate?: (menu: string) => void
 	mode?: "inspiration"
+	initialData?: HomeInitialData
 }
 
 function getArticlePreview(content: string) {
@@ -79,9 +58,10 @@ function ArticleMarkdown({ content }: { content: string }) {
 			{content.split("\n").map((line, index) => {
 				const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 				if (image) {
+					const src = resolveAssetUrl(image[2])
 					return (
 						<figure key={index} className="flex flex-col items-center">
-							<img src={resolveAssetUrl(image[2])} alt="" className="max-h-[40vh] max-w-[50%] rounded-md object-contain" />
+							<Image src={src} alt={image[1] || "文章配图"} width={1200} height={800} sizes="(max-width: 768px) 90vw, 50vw" unoptimized={/^https?:\/\//.test(src)} className="h-auto max-h-[40vh] max-w-[50%] rounded-md object-contain" />
 						</figure>
 					)
 				}
@@ -96,21 +76,26 @@ function ArticleMarkdown({ content }: { content: string }) {
 	)
 }
 
-function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
-	const [articles, setArticles] = useState<FeedItem[]>([])
-	const [loading, setLoading] = useState(true)
+function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigate" | "initialData">) {
+	const [articles, setArticles] = useState<FeedItem[]>(initialData?.articles ?? [])
+	const [loading, setLoading] = useState(!initialData)
 	const [sort, setSort] = useState<FeedSort>("new")
 	const [selectedArticle, setSelectedArticle] = useState<FeedItem | null>(null)
-	const [hotNews, setHotNews] = useState<HotNewsItem[]>([])
-	const [newsConfigured, setNewsConfigured] = useState(true)
-	const [hotNewsLoading, setHotNewsLoading] = useState(true)
+	const [hotNews] = useState<HotNewsItem[]>(initialData?.hotNews ?? [])
+	const [newsConfigured] = useState(initialData?.newsConfigured ?? false)
+	const [hotArticles] = useState<FeedItem[]>(initialData?.hotArticles ?? [])
+	const initialSortHandled = useRef(false)
 
 	useEffect(() => {
+		if (!initialSortHandled.current && initialData && sort === "new") {
+			initialSortHandled.current = true
+			return
+		}
 		let cancelled = false
 		setLoading(true)
-		api<{ works: FeedItem[] }>(`/api/content/feed?sort=${sort}&limit=10&offset=0`)
-			.then((data) => {
-				if (!cancelled) setArticles(data.works)
+		getFeed<FeedItem>(sort)
+			.then((works) => {
+				if (!cancelled) setArticles(works)
 			})
 			.catch(() => {
 				if (!cancelled) setArticles([])
@@ -121,24 +106,14 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 		return () => {
 			cancelled = true
 		}
-	}, [sort])
-
-	useEffect(() => {
-		api<{ articles: HotNewsItem[]; configured: boolean }>("/api/content/hot-news", { cache: "no-store" })
-			.then((data) => {
-				setHotNews(data.articles)
-				setNewsConfigured(data.configured)
-			})
-			.catch(() => setHotNews([]))
-			.finally(() => setHotNewsLoading(false))
-	}, [])
+	}, [initialData, sort])
 
 	const openArticle = async (article: FeedItem) => {
 		setSelectedArticle(article)
 		try {
-			const data = await api<{ work: FeedItem }>(`/api/content/feed/${article.id}`)
-			setSelectedArticle(data.work)
-			setArticles((items) => items.map((item) => item.id === data.work.id ? data.work : item))
+			const work = await getFeedWork<FeedItem>(article.id)
+			setSelectedArticle(work)
+			setArticles((items) => items.map((item) => item.id === work.id ? work : item))
 		} catch {
 			// 列表摘要仍可作为降级详情展示
 		}
@@ -147,10 +122,7 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 	const toggleReaction = async (type: "like" | "favorite") => {
 		if (!selectedArticle) return
 		try {
-			const data = await api<{ active: boolean }>(`/api/content/feed/${selectedArticle.id}/reactions`, {
-				method: "POST",
-				body: JSON.stringify({ type }),
-			})
+			const data = await toggleFeedReaction(selectedArticle.id, type)
 			setSelectedArticle((current) => current ? {
 				...current,
 				[type === "like" ? "liked" : "favorited"]: data.active,
@@ -163,10 +135,7 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 
 	const toggleArticleReaction = async (article: FeedItem, type: "like" | "favorite") => {
 		try {
-			const data = await api<{ active: boolean }>(`/api/content/feed/${article.id}/reactions`, {
-				method: "POST",
-				body: JSON.stringify({ type }),
-			})
+			const data = await toggleFeedReaction(article.id, type)
 			setArticles((items) => items.map((item) => item.id === article.id ? {
 				...item,
 				[type === "like" ? "liked" : "favorited"]: data.active,
@@ -176,10 +145,6 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 			// 未登录时不改变本地互动状态
 		}
 	}
-
-	const hotArticles = [...articles]
-		.sort((a, b) => Number(b.view_count || 0) - Number(a.view_count || 0))
-		.slice(0, 5)
 
 	return (
 		<div className="enter-workspace flex-1 xl:h-[calc(100dvh-72px)] xl:overflow-hidden">
@@ -234,17 +199,22 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 							</div>
 						) : (
 							<div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 sm:px-4 ">
-								{articles.map((article) => (
+								{articles.map((article) => {
+									const preview = getArticlePreview(article.content)
+									const previewImageSrc = preview.image ? resolveAssetUrl(preview.image) : null
+									return (
 									<article key={article.id} onClick={() => void openArticle(article)} className="homepage-article-card group cursor-pointer rounded-lg bg-card p-3 shadow-sm transition-colors hover:bg-red-50/10 sm:p-4">
 										<div className="flex gap-4">
-											{getArticlePreview(article.content).image ? (
-												<img src={getArticlePreview(article.content).image!} alt="" className="h-28 w-36 shrink-0 rounded-lg object-cover sm:h-32 sm:w-44" />
+											{previewImageSrc ? (
+												<div className="relative h-28 w-36 shrink-0 overflow-hidden rounded-lg sm:h-32 sm:w-44">
+													<Image src={previewImageSrc} alt={`${article.title}配图`} fill sizes="(max-width: 640px) 144px, 176px" unoptimized={/^https?:\/\//.test(previewImageSrc)} className="object-cover" />
+												</div>
 											) : (
 												<div className="flex h-28 w-36 shrink-0 items-center justify-center rounded-lg border bg-muted/50 text-xs text-muted-foreground sm:h-32 sm:w-44">无配图</div>
 											)}
 											<div className="flex min-w-0 flex-1 flex-col">
 												<h2 className="line-clamp-1 text-lg font-bold transition-colors group-hover:text-red-600">{article.title}</h2>
-												<p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">{getArticlePreview(article.content).text || "暂无正文内容"}…</p>
+												<p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">{preview.text || "暂无正文内容"}…</p>
 												<div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-2 pt-3 text-[11px] text-muted-foreground">
 													<span className="font-medium text-foreground">{article.nickname || "创作者"}</span>
 													<span>{formatDate(article.created_at)}</span>
@@ -255,7 +225,8 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 											</div>
 										</div>
 									</article>
-								))}
+									)
+								})}
 							</div>
 						)}
 					</section>
@@ -270,19 +241,7 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 								<span className="h-2 w-2 rounded-full bg-red-500" />
 							</div>
 							<div className="min-h-[170px]">
-								{hotNewsLoading ? (
-									<div className="space-y-1" aria-label="正在加载热点新闻">
-										{Array.from({ length: 5 }).map((_, index) => (
-											<div key={index} className="flex h-8 items-center gap-2.5 px-1">
-												<span className="h-3 w-4 animate-pulse rounded bg-muted" />
-												<span className="min-w-0 flex-1">
-													<span className="block h-3 animate-pulse rounded bg-muted" style={{ width: `${88 - index * 7}%` }} />
-													<span className="mt-1 block h-2 w-16 animate-pulse rounded bg-muted/70" />
-												</span>
-											</div>
-										))}
-									</div>
-								) : hotNews.length ? (
+								{hotNews.length ? (
 									<div>{hotNews.slice(0, 5).map((news, index) => <a key={news.url} href={news.url} target="_blank" rel="noreferrer" className="group flex gap-2.5 rounded-lg px-1 py-1.5 hover:bg-muted/60"><span className="text-xs font-bold text-red-500">{String(index + 1).padStart(2, "0")}</span><span><span className="line-clamp-1 text-xs font-medium leading-5 group-hover:text-red-600">{news.title}</span><span className="block text-[10px] text-muted-foreground">{news.source?.name || "新闻来源"}</span></span></a>)}</div>
 								) : (
 									<div className="flex min-h-[170px] items-center justify-center rounded-lg border border-dashed px-3 text-center text-xs text-muted-foreground">{newsConfigured ? "热点新闻暂时不可用" : "配置 GNEWS_API_KEY 后显示实时热点"}</div>
@@ -293,16 +252,11 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 							<div className="mb-3 flex items-center gap-2">
 								<div>
 									<h2 className="text-sm font-bold">爆文榜单</h2>
-									<p className="text-[10px] text-muted-foreground">按阅读热度实时排序</p>
+									<p className="text-[10px] text-muted-foreground">综合互动、质量与时效排序</p>
 								</div>
 							</div>
 							<div className="min-h-[180px]">
-								{loading ? Array.from({ length: 5 }).map((_, index) => (
-									<div key={index} className="flex h-9 items-center gap-2.5 px-1">
-										<span className="h-3 w-4 animate-pulse rounded bg-muted" />
-										<span className="flex-1"><span className="block h-3 animate-pulse rounded bg-muted" style={{ width: `${90 - index * 6}%` }} /><span className="mt-1 block h-2 w-20 animate-pulse rounded bg-muted/70" /></span>
-									</div>
-								)) : Array.from({ length: 5 }).map((_, index) => {
+								{Array.from({ length: 5 }).map((_, index) => {
 									const article = hotArticles[index]
 									return article ? (
 										<button
@@ -316,7 +270,7 @@ function ContentHome({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 												<span className="line-clamp-1 text-xs font-medium leading-5 group-hover:text-red-600">{article.title}</span>
 												<div className="flex items-center gap-1 text-[10px] text-muted-foreground">
 													<Flame className="h-3 w-3" />
-													{Number(article.view_count || 0).toLocaleString("zh-CN")} 热度
+													热度 {Number(article.hot_score || 0).toFixed(2)}
 												</div>
 											</span>
 											<div className="group-hover:text-red-600 self-center flex items-center text-xs font-bold opacity-0 transition-opacity duration-200 group-hover:opacity-100">
@@ -385,7 +339,7 @@ function InspirationView({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 	)
 }
 
-export default function MainPage({ onNavigate, mode }: MainPageProps) {
+export default function MainPage({ onNavigate, mode, initialData }: MainPageProps) {
 	if (mode === "inspiration") return <InspirationView onNavigate={onNavigate} />
-	return <ContentHome onNavigate={onNavigate} />
+	return <ContentHome initialData={initialData} onNavigate={onNavigate} />
 }
