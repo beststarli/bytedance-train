@@ -275,7 +275,8 @@ export async function generateRewriteProposals(jobId: string, userId: string) {
 			}>(
 				`你是内容安全改写 Agent。针对每个审核问题生成最小范围的合规替代内容。
 不得修改无关事实、数字、引用和文章结构，不得新增原文没有的信息。
-仅返回 JSON：{"proposals":[{"finding_id":"问题ID","replacement":"替代片段","reason":"修改说明"}]}`,
+必须为每个问题原样返回输入中的 finding_id。
+仅返回 JSON，例如：{"proposals":[{"finding_id":"e73c8fe9-60e6-409e-b0ce-3351121f2eaa","replacement":"替代片段","reason":"修改说明"}]}`,
 				`标题：${review.title}\n正文：${review.content}\n审核问题：${JSON.stringify(review.findings)}`,
 			),
 		)
@@ -285,15 +286,22 @@ export async function generateRewriteProposals(jobId: string, userId: string) {
 	}
 	const findingMap = new Map(review.findings.map((item: any) => [String(item.id), item]))
 	const proposals = []
-	for (const item of result.proposals || []) {
-		const finding = findingMap.get(String(item.finding_id)) as any
+	for (const [index, item] of (result.proposals || []).entries()) {
+		const finding = (findingMap.get(String(item.finding_id)) || review.findings[index]) as any
 		const replacement = String(item.replacement || '').trim()
-		if (!finding?.excerpt || !replacement) continue
+		const rawExcerpt = String(finding?.excerpt || '').trim()
+		const excerptCandidates = [
+			rawExcerpt,
+			rawExcerpt.replace(/^(?:正文|原文|内容)\s*[:：]\s*/i, ''),
+			rawExcerpt.replace(/^[“”"'‘’]+|[“”"'‘’]+$/g, ''),
+		].filter(Boolean)
+		const originalContent = excerptCandidates.find((candidate) => review.content.includes(candidate)) || ''
+		if (!finding || !originalContent || !replacement) continue
 		const { rows: inserted } = await pool.query(
 			`INSERT INTO rewrite_proposals
 			 (review_job_id, finding_id, work_version_id, agent_run_id, original_content, replacement_content, reason)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-			[jobId, finding.id, review.work_version_id, state.runId, finding.excerpt, replacement, String(item.reason || finding.suggestion || '')],
+			[jobId, finding.id, review.work_version_id, state.runId, originalContent, replacement, String(item.reason || finding.suggestion || '')],
 		)
 		proposals.push(inserted[0])
 	}
