@@ -137,7 +137,7 @@ router.post('/materials', async (req: Request, res: Response) => {
 			return
 		}
 		const ext = imageExtension(mime)
-		const savedName = `mat_${userId}_${Date.now()}.${ext}`
+		const savedName = `mat_${userId}_${Date.now()}_${randomUUID().slice(0, 8)}.${ext}`
 		const url = await saveUpload(`materials/${savedName}`, buffer, mime)
 		const { rows } = await pool.query(
 			'INSERT INTO materials (user_id, filename, url, type, size) VALUES ($1, $2, $3, $4, $5) RETURNING *',

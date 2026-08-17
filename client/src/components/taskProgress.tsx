@@ -16,6 +16,10 @@ export function emitTaskProgress(detail: TaskState) {
     window.dispatchEvent(new CustomEvent<TaskState>(TASK_PROGRESS_EVENT, { detail }))
 }
 
+export function clearTaskProgress() {
+    window.dispatchEvent(new CustomEvent<null>(TASK_PROGRESS_EVENT, { detail: null }))
+}
+
 export default function TaskProgress() {
     const [task, setTask] = useState<TaskState | null>(null)
     const userId = useAuthStore((state) => state.user?.id)
@@ -27,9 +31,10 @@ export default function TaskProgress() {
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined
         const listener = (event: Event) => {
-            const detail = (event as CustomEvent<TaskState>).detail
+            const detail = (event as CustomEvent<TaskState | null>).detail
             setTask(detail)
             if (timer) clearTimeout(timer)
+			if (!detail) return
             if (detail.status !== "running") timer = setTimeout(() => setTask(null), 1600)
         }
         window.addEventListener(TASK_PROGRESS_EVENT, listener)

@@ -23,6 +23,7 @@ export interface HotNewsItem {
 
 export interface HomeInitialData {
 	articles: FeedItem[]
+	articlesHasMore: boolean
 	hotArticles: FeedItem[]
 	hotNews: HotNewsItem[]
 	newsConfigured: boolean

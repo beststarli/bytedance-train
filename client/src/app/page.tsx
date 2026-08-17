@@ -1,4 +1,5 @@
 import HomeClient from "@/app/home-client"
+import type { FeedPage } from "@/api/feed"
 import type { FeedItem, HomeInitialData, HotNewsItem } from "@/types/home"
 
 const serverPort = process.env.Server_Port || "4001"
@@ -16,13 +17,14 @@ async function fetchJson<T>(path: string, fallback: T): Promise<T> {
 
 export default async function Home() {
 	const [feed, hotFeed, news] = await Promise.all([
-		fetchJson<{ works: FeedItem[] }>("/api/content/feed?sort=new&limit=10&offset=0", { works: [] }),
-		fetchJson<{ works: FeedItem[] }>("/api/content/feed?sort=hot&limit=5&offset=0", { works: [] }),
+		fetchJson<FeedPage<FeedItem>>("/api/content/feed?sort=new&limit=10&offset=0", { works: [], total: 0, has_more: false }),
+		fetchJson<FeedPage<FeedItem>>("/api/content/feed?sort=hot&limit=5&offset=0", { works: [], total: 0, has_more: false }),
 		fetchJson<{ articles: HotNewsItem[]; configured: boolean }>("/api/content/hot-news", { articles: [], configured: false }),
 	])
 
 	const initialHomeData: HomeInitialData = {
 		articles: feed.works,
+		articlesHasMore: feed.has_more,
 		hotArticles: hotFeed.works,
 		hotNews: news.articles,
 		newsConfigured: news.configured,

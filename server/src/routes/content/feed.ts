@@ -16,10 +16,10 @@ router.get('/feed', async (req: Request, res: Response) => {
 	const limit = Math.min(Math.max(Number.isFinite(parsedLimit) ? parsedLimit : 20, 1), 50)
 	const offset = Math.max(Number.isFinite(parsedOffset) ? parsedOffset : 0, 0)
 
-	let orderBy = 'hot_score DESC, created_at DESC'
-	if (sort === 'new') orderBy = 'created_at DESC'
-	else if (sort === 'likes') orderBy = 'like_count DESC, created_at DESC'
-	else if (sort === 'quality') orderBy = 'quality_score DESC NULLS LAST, view_count DESC'
+	let orderBy = 'hot_score DESC, created_at DESC, id DESC'
+	if (sort === 'new') orderBy = 'created_at DESC, id DESC'
+	else if (sort === 'likes') orderBy = 'like_count DESC, created_at DESC, id DESC'
+	else if (sort === 'quality') orderBy = 'quality_score DESC NULLS LAST, view_count DESC, id DESC'
 
 	const { rows } = await pool.query(
 		`WITH feed_items AS (

@@ -34,12 +34,12 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '@/store/userStore'
 import { createChat, deleteChat, generateChatStream, getChatMessages, getChats, importMessageImage, renameChat, uploadAiAttachment } from '@/api/chats'
-import { getMaterials } from '@/api/materials'
+import { getMaterials, uploadMaterial } from '@/api/materials'
 import { getPrompts } from '@/api/prompts'
 import { saveWork } from '@/api/works'
 import { cn, createClientId } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { emitTaskProgress } from '@/components/taskProgress'
+import { clearTaskProgress, emitTaskProgress } from '@/components/taskProgress'
 import { resolveAssetUrl } from '@/lib/asset-url'
 import { useEditorStore } from '@/store/editorStore'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -295,10 +295,13 @@ function renderEditorInline(value: string) {
 
 function markdownToEditorHtml(content: string) {
 	if (!content) return ''
-	return content.split('\n').map((line) => {
+	const lines = content.split('\n')
+	return lines.map((line, index) => {
 		const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
 		if (image) {
-			return `<figure contenteditable="false" data-image-node="true" data-image-alt="${escapeHtml(image[1])}" data-image-url="${escapeHtml(image[2])}"><img src="${escapeHtml(resolveAssetUrl(image[2]))}" alt=""><button type="button" data-remove-image="true" aria-label="删除图片" title="删除图片">×</button></figure>`
+			const figure = `<figure contenteditable="false" data-image-node="true" data-image-alt="${escapeHtml(image[1])}" data-image-url="${escapeHtml(image[2])}"><img src="${escapeHtml(resolveAssetUrl(image[2]))}" alt=""><button type="button" data-remove-image="true" aria-label="删除图片" title="删除图片">×</button></figure>`
+			// contenteditable=false 的块节点不能承载光标；末尾图片后必须保留可编辑落点。
+			return index === lines.length - 1 ? `${figure}<p><br></p>` : figure
 		}
 		if (line.startsWith('## ')) return `<h2>${renderEditorInline(line.slice(3))}</h2>`
 		if (line.startsWith('# ')) return `<h1>${renderEditorInline(line.slice(2))}</h1>`
@@ -341,6 +344,53 @@ function editorHtmlToMarkdown(editor: HTMLDivElement) {
 	}).join('\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+function fileAsDataUrl(file: File) {
+	return new Promise<string>((resolve, reject) => {
+		const reader = new FileReader()
+		reader.onload = () => resolve(String(reader.result || ''))
+		reader.onerror = () => reject(new Error('读取剪贴板图片失败'))
+		reader.readAsDataURL(file)
+	})
+}
+
+function createCaretParagraph() {
+	const paragraph = document.createElement('p')
+	paragraph.append(document.createElement('br'))
+	return paragraph
+}
+
+function placeCaretInside(node: HTMLElement) {
+	const range = document.createRange()
+	range.selectNodeContents(node)
+	range.collapse(true)
+	const selection = window.getSelection()
+	selection?.removeAllRanges()
+	selection?.addRange(range)
+}
+
+function ensureEditableCaretAfter(imageNode: Element) {
+	const existing = imageNode.nextElementSibling
+	const paragraph = existing instanceof HTMLParagraphElement
+		? existing
+		: createCaretParagraph()
+	if (paragraph !== existing) imageNode.after(paragraph)
+	placeCaretInside(paragraph)
+	return paragraph
+}
+
+function insertEditorImageAtRange(editor: HTMLDivElement, range: Range, imageNode: Element) {
+	range.deleteContents()
+	range.insertNode(imageNode)
+	if (imageNode.parentElement !== editor) {
+		let topLevelParent = imageNode.parentElement
+		while (topLevelParent?.parentElement && topLevelParent.parentElement !== editor) {
+			topLevelParent = topLevelParent.parentElement
+		}
+		if (topLevelParent?.parentElement === editor) topLevelParent.after(imageNode)
+	}
+	return ensureEditableCaretAfter(imageNode)
+}
+
 function InlineArticleEditor({
 	content,
 	onChange,
@@ -348,6 +398,8 @@ function InlineArticleEditor({
 	fillHeight = false,
 	disabled = false,
 	onTextSelection,
+	onImageUploaded,
+	onImageUploadStateChange,
 }: {
 	content: string
 	onChange: (content: string) => void
@@ -355,6 +407,8 @@ function InlineArticleEditor({
 	fillHeight?: boolean
 	disabled?: boolean
 	onTextSelection?: (selection: FloatingSelection | null) => void
+	onImageUploaded?: (material: Material) => void
+	onImageUploadStateChange?: (uploading: boolean) => void
 }) {
 	const lastContentRef = useRef(content)
 
@@ -389,14 +443,82 @@ function InlineArticleEditor({
 			if (!materialNode) return
 			const doc = document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
 			const range = doc.caretRangeFromPoint?.(event.clientX, event.clientY) || window.getSelection()?.getRangeAt(0)
+			let caretParagraph: HTMLParagraphElement
 			if (range && editorRef.current.contains(range.commonAncestorContainer)) {
-				range.insertNode(materialNode)
+				caretParagraph = insertEditorImageAtRange(editorRef.current, range, materialNode)
 			} else {
 				editorRef.current.append(materialNode)
+				caretParagraph = ensureEditableCaretAfter(materialNode)
 			}
 			syncContent()
+			editorRef.current.focus()
+			placeCaretInside(caretParagraph)
 		} catch {
 			// 忽略非素材拖拽数据
+		}
+	}
+
+	const handlePaste = async (event: React.ClipboardEvent<HTMLDivElement>) => {
+		if (disabled || !editorRef.current) return
+		const imageFiles = Array.from(event.clipboardData.items)
+			.filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+			.map((item) => item.getAsFile())
+			.filter((file): file is File => !!file)
+		if (!imageFiles.length) return
+
+		event.preventDefault()
+		const editor = editorRef.current
+		const selection = window.getSelection()
+		const selectedRange = selection?.rangeCount ? selection.getRangeAt(0) : null
+		const insertionRange = selectedRange && editor.contains(selectedRange.commonAncestorContainer)
+			? selectedRange.cloneRange()
+			: document.createRange()
+		if (!selectedRange || !editor.contains(selectedRange.commonAncestorContainer)) {
+			insertionRange.selectNodeContents(editor)
+			insertionRange.collapse(false)
+		}
+
+		onImageUploadStateChange?.(true)
+		emitTaskProgress({
+			title: imageFiles.length > 1 ? `正在上传 ${imageFiles.length} 张粘贴图片` : '正在上传粘贴图片',
+			status: 'running',
+			message: '上传完成后会自动插入正文',
+		})
+		let caretParagraph: HTMLParagraphElement | null = null
+		try {
+			for (const [index, file] of imageFiles.entries()) {
+				if (file.size > 10 * 1024 * 1024) throw new Error(`第 ${index + 1} 张图片超过 10MB`)
+				const data = await fileAsDataUrl(file)
+				const uploaded = await uploadMaterial<{ material: Material }>({
+					filename: file.name || `clipboard-${Date.now()}-${index + 1}.png`,
+					data,
+					type: 'image',
+				})
+				const material = uploaded.material
+				const holder = document.createElement('div')
+				holder.innerHTML = markdownToEditorHtml(`![${material.filename}](${material.url})`)
+				const imageNode = holder.firstElementChild
+				if (!imageNode) throw new Error('无法创建正文图片节点')
+				if (caretParagraph) {
+					caretParagraph.before(imageNode)
+				} else {
+					caretParagraph = insertEditorImageAtRange(editor, insertionRange, imageNode)
+				}
+				onImageUploaded?.(material)
+				// 多图粘贴中途失败时，已成功上传的图片仍应进入正文状态。
+				syncContent()
+			}
+			editor.focus()
+			if (caretParagraph) placeCaretInside(caretParagraph)
+			clearTaskProgress()
+		} catch (error) {
+			emitTaskProgress({
+				title: '粘贴图片上传失败',
+				status: 'error',
+				message: error instanceof Error ? error.message : '请稍后重试',
+			})
+		} finally {
+			onImageUploadStateChange?.(false)
 		}
 	}
 
@@ -424,6 +546,7 @@ function InlineArticleEditor({
 				disabled && "cursor-not-allowed bg-muted/25 text-muted-foreground",
 			)}
 			onInput={() => { if (!disabled) syncContent() }}
+			onPaste={(event) => { void handlePaste(event) }}
 			onMouseUp={() => {
 				if (disabled || !onTextSelection) return
 				const selection = window.getSelection()
@@ -440,9 +563,17 @@ function InlineArticleEditor({
 				if (disabled) return
 				const target = event.target as HTMLElement
 				const removeButton = target.closest('[data-remove-image="true"]')
-				if (!removeButton) return
-				removeButton.closest('[data-image-node="true"]')?.remove()
-				syncContent()
+				if (removeButton) {
+					removeButton.closest('[data-image-node="true"]')?.remove()
+					syncContent()
+					return
+				}
+				const imageNode = target.closest('[data-image-node="true"]')
+				if (imageNode) {
+					const caretParagraph = ensureEditableCaretAfter(imageNode)
+					editorRef.current?.focus()
+					placeCaretInside(caretParagraph)
+				}
 			}}
 			onDragOver={(event) => {
 				if (disabled) return
@@ -506,6 +637,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>('ai')
 	const { id: editingWorkId, title: draftTitle, content: draftContent, setTitle: setDraftTitle, setContent: setDraftContent, markSaved, clear: clearEditor } = useEditorStore()
 	const [publishing, setPublishing] = useState(false)
+	const [uploadingPastedImage, setUploadingPastedImage] = useState(false)
 	const [showClearEditorDialog, setShowClearEditorDialog] = useState(false)
 	const [clearingEditor, setClearingEditor] = useState(false)
 	const [deleteChatTarget, setDeleteChatTarget] = useState<Chat | null>(null)
@@ -1142,6 +1274,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 		setDraftContent(`${draftContent}${draftContent.trim() ? '\n\n' : ''}${markdown}\n`)
 	}, [draftContent, setDraftContent])
 
+	const registerPastedMaterial = useCallback((material: Material) => {
+		setMaterials((current) => [material, ...current.filter((item) => item.id !== material.id)])
+	}, [])
+
 	const importAssistantMessage = useCallback((content: string) => {
 		const article = articleFromAssistantMessage(content)
 		if (!article.content) return
@@ -1231,11 +1367,17 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	}, [])
 
 	const handlePublish = async (status: 'draft' | 'published') => {
-		if (!user || !draftTitle.trim() || !draftContent.trim()) return
+		const currentContent = draftEditorRef.current ? editorHtmlToMarkdown(draftEditorRef.current) : draftContent
+		if (!user || uploadingPastedImage || !draftTitle.trim() || !currentContent.trim()) return
+		if (/!\[[^\]]*\]\(\s*(?:blob:|data:image\/)/i.test(currentContent)) {
+			emitTaskProgress({ title: '图片尚未上传完成', status: 'error', message: '请删除临时图片后重新粘贴，并等待上传完成再提交' })
+			return
+		}
+		if (currentContent !== draftContent) setDraftContent(currentContent)
 		setPublishing(true)
 		emitTaskProgress({ title: status === 'published' ? '正在提交 AI 审核' : '正在保存草稿', status: 'running', message: status === 'published' ? '正在创建内容版本与审核任务' : '正在同步内容与作品数据' })
 		try {
-			const work = await saveWork<{ id: string }>(editingWorkId, { title: draftTitle.trim(), content: draftContent.trim(), status })
+			const work = await saveWork<{ id: string }>(editingWorkId, { title: draftTitle.trim(), content: currentContent.trim(), status })
 			markSaved(work.id)
 			if (status === 'published' && user) removeLocalDraft(user.id)
 			emitTaskProgress({ title: status === 'published' ? '已进入审核队列' : '草稿保存成功', status: 'success', message: status === 'published' ? '审核通过后文章会自动发布' : '内容已同步' })
@@ -1341,9 +1483,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						<div className="mb-5 flex items-center justify-between gap-4">
 							<div><button type="button" onClick={() => setCreationMode(null)} className="text-xs text-muted-foreground hover:text-red-500">← 返回创作方式</button><h1 className="mt-2 text-xl font-bold">内容写作台</h1></div>
 							<div className="flex gap-2">
-								<Button variant="ghost" disabled={publishing || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" />清空写作台</Button>
-								<Button variant="outline" disabled={publishing || !isLoggedIn} onClick={() => void handlePublish('draft')}>保存草稿</Button>
-								<Button disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">提交审核</Button>
+								<Button variant="ghost" disabled={publishing || uploadingPastedImage || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" />清空写作台</Button>
+								<Button variant="outline" disabled={publishing || uploadingPastedImage || !isLoggedIn} onClick={() => void handlePublish('draft')}>{uploadingPastedImage ? '图片上传中…' : '保存草稿'}</Button>
+								<Button disabled={publishing || uploadingPastedImage || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">{uploadingPastedImage ? '图片上传中…' : '提交审核'}</Button>
 							</div>
 						</div>
 						<div className="workspace-card overflow-hidden">
@@ -1354,6 +1496,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 								editorRef={draftEditorRef}
 									disabled={!isLoggedIn}
 									onTextSelection={setFloatingSelection}
+									onImageUploaded={registerPastedMaterial}
+									onImageUploadStateChange={setUploadingPastedImage}
 							/>
 						</div>
 					</div>
@@ -1370,9 +1514,9 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 					<div className="flex items-center justify-between gap-3">
 						<div><div className="text-sm font-bold">内容写作台</div><div className="mt-1 text-[10px] text-muted-foreground">内容会在发布前保留在当前工作区</div></div>
 						<div className="flex gap-2">
-							<Button variant="ghost" size="sm" disabled={publishing || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" />清空</Button>
-							<Button variant="outline" size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>保存草稿</Button>
-							<Button size="sm" disabled={publishing || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">提交审核</Button>
+							<Button variant="ghost" size="sm" disabled={publishing || uploadingPastedImage || !isLoggedIn} onClick={requestClearEditor} className="text-muted-foreground hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" />清空</Button>
+							<Button variant="outline" size="sm" disabled={publishing || uploadingPastedImage || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('draft')}>{uploadingPastedImage ? '图片上传中…' : '保存草稿'}</Button>
+							<Button size="sm" disabled={publishing || uploadingPastedImage || !isLoggedIn || !draftTitle.trim() || !draftContent.trim()} onClick={() => void handlePublish('published')} className="bg-red-500 text-white hover:bg-red-600">{uploadingPastedImage ? '图片上传中…' : '提交审核'}</Button>
 						</div>
 					</div>
 					<div className=" flex flex-wrap items-center gap-1">
@@ -1404,6 +1548,8 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 						fillHeight
 							disabled={!isLoggedIn}
 							onTextSelection={setFloatingSelection}
+							onImageUploaded={registerPastedMaterial}
+							onImageUploadStateChange={setUploadingPastedImage}
 					/>
 				</div>
 			</section>
