@@ -1,7 +1,9 @@
 "use client"
 
 import Image from "next/image"
-import React, { useEffect, useRef, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import {
 	ArrowRight,
 	Bookmark,
@@ -33,6 +35,8 @@ const feedSortLabels: Record<FeedSort, string> = {
 	likes: "最多点赞",
 }
 
+const FEED_PAGE_SIZE = 10
+
 interface MainPageProps {
 	onNavigate?: (menu: string) => void
 	mode?: "inspiration"
@@ -54,24 +58,35 @@ function getArticlePreview(content: string) {
 
 function ArticleMarkdown({ content }: { content: string }) {
 	return (
-		<div className="space-y-4 text-justify text-[16px] leading-8 text-foreground/90">
-			{content.split("\n").map((line, index) => {
-				const image = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
-				if (image) {
-					const src = resolveAssetUrl(image[2])
-					return (
-						<figure key={index} className="flex flex-col items-center">
-							<Image src={src} alt={image[1] || "文章配图"} width={1200} height={800} sizes="(max-width: 768px) 90vw, 50vw" unoptimized={/^https?:\/\//.test(src)} className="h-auto max-h-[40vh] max-w-[50%] rounded-md object-contain" />
-						</figure>
-					)
-				}
-				if (line.startsWith("### ")) return <h3 key={index} className="pt-2 text-lg font-bold">{line.slice(4)}</h3>
-				if (line.startsWith("## ")) return <h2 key={index} className="pt-2 text-xl font-bold">{line.slice(3)}</h2>
-				if (line.startsWith("# ")) return <h1 key={index} className="pt-2 text-2xl font-bold">{line.slice(2)}</h1>
-				if (/^[-*]\s/.test(line)) return <div key={index} className="flex gap-2"><span className="text-red-500">•</span><span>{line.slice(2)}</span></div>
-				// if (!line.trim()) return <div key={index} className="h-2" />
-				return <p key={index}>{line}</p>
-			})}
+		<div className="text-justify text-[16px] leading-8 text-foreground/90">
+			<ReactMarkdown
+				remarkPlugins={[remarkGfm]}
+				components={{
+					h1: ({ children }) => <h1 className="mb-4 mt-7 text-3xl font-bold leading-tight first:mt-0">{children}</h1>,
+					h2: ({ children }) => <h2 className="mb-3 mt-6 text-2xl font-bold leading-tight first:mt-0">{children}</h2>,
+					h3: ({ children }) => <h3 className="mb-3 mt-5 text-xl font-semibold leading-tight first:mt-0">{children}</h3>,
+					p: ({ children }) => <p className="my-3 whitespace-pre-wrap">{children}</p>,
+					strong: ({ children }) => <strong className="font-bold text-foreground">{children}</strong>,
+					em: ({ children }) => <em className="italic">{children}</em>,
+					blockquote: ({ children }) => <blockquote className="my-4 border-l-4 border-red-400 bg-muted/45 px-4 py-1 text-muted-foreground">{children}</blockquote>,
+					ul: ({ children }) => <ul className="my-3 list-disc space-y-1 pl-6 marker:text-red-500">{children}</ul>,
+					ol: ({ children }) => <ol className="my-3 list-decimal space-y-1 pl-6 marker:font-semibold marker:text-red-500">{children}</ol>,
+					li: ({ children }) => <li className="pl-1">{children}</li>,
+					a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="font-medium text-red-500 underline decoration-red-300 underline-offset-4 hover:text-red-600">{children}</a>,
+					code: ({ children, className }) => <code className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-[0.9em]", className)}>{children}</code>,
+					pre: ({ children }) => <pre className="my-4 overflow-x-auto rounded-lg bg-slate-950 p-4 text-left text-sm leading-6 text-slate-100 [&_code]:bg-transparent [&_code]:p-0">{children}</pre>,
+					hr: () => <hr className="my-6 border-border" />,
+					table: ({ children }) => <div className="my-4 overflow-x-auto"><table className="w-full border-collapse text-left text-sm">{children}</table></div>,
+					th: ({ children }) => <th className="border bg-muted px-3 py-2 font-semibold">{children}</th>,
+					td: ({ children }) => <td className="border px-3 py-2">{children}</td>,
+					img: ({ src, alt }) => {
+						const resolvedSrc = resolveAssetUrl(String(src || ""))
+						return <span className="my-5 flex justify-center"><Image src={resolvedSrc} alt={alt || "文章配图"} width={1200} height={800} sizes="(max-width: 768px) 90vw, 50vw" unoptimized={/^https?:\/\//.test(resolvedSrc)} className="h-auto max-h-[55vh] w-auto max-w-full rounded-lg object-contain shadow-sm" /></span>
+					},
+				}}
+			>
+				{content}
+			</ReactMarkdown>
 		</div>
 	)
 }
@@ -79,12 +94,20 @@ function ArticleMarkdown({ content }: { content: string }) {
 function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigate" | "initialData">) {
 	const [articles, setArticles] = useState<FeedItem[]>(initialData?.articles ?? [])
 	const [loading, setLoading] = useState(!initialData)
+	const [loadingMore, setLoadingMore] = useState(false)
+	const [hasMore, setHasMore] = useState(initialData?.articlesHasMore ?? false)
+	const [nextOffset, setNextOffset] = useState(initialData?.articles.length ?? 0)
+	const [loadMoreFailed, setLoadMoreFailed] = useState(false)
 	const [sort, setSort] = useState<FeedSort>("new")
 	const [selectedArticle, setSelectedArticle] = useState<FeedItem | null>(null)
 	const [hotNews] = useState<HotNewsItem[]>(initialData?.hotNews ?? [])
 	const [newsConfigured] = useState(initialData?.newsConfigured ?? false)
 	const [hotArticles] = useState<FeedItem[]>(initialData?.hotArticles ?? [])
 	const initialSortHandled = useRef(false)
+	const scrollContainerRef = useRef<HTMLDivElement>(null)
+	const loadMoreRef = useRef<HTMLDivElement>(null)
+	const loadingMoreRef = useRef(false)
+	const requestGenerationRef = useRef(0)
 
 	useEffect(() => {
 		if (!initialSortHandled.current && initialData && sort === "new") {
@@ -92,13 +115,23 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 			return
 		}
 		let cancelled = false
+		const requestGeneration = ++requestGenerationRef.current
+		loadingMoreRef.current = false
 		setLoading(true)
-		getFeed<FeedItem>(sort)
-			.then((works) => {
-				if (!cancelled) setArticles(works)
+		setLoadingMore(false)
+		setLoadMoreFailed(false)
+		getFeed<FeedItem>(sort, FEED_PAGE_SIZE, 0)
+			.then((page) => {
+				if (cancelled || requestGeneration !== requestGenerationRef.current) return
+				setArticles(page.works)
+				setHasMore(page.has_more)
+				setNextOffset(page.works.length)
+				scrollContainerRef.current?.scrollTo({ top: 0 })
 			})
 			.catch(() => {
-				if (!cancelled) setArticles([])
+				if (cancelled || requestGeneration !== requestGenerationRef.current) return
+				setArticles([])
+				setHasMore(false)
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false)
@@ -107,6 +140,44 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 			cancelled = true
 		}
 	}, [initialData, sort])
+
+	const loadMore = useCallback(async () => {
+		if (loading || loadingMoreRef.current || !hasMore) return
+		loadingMoreRef.current = true
+		setLoadingMore(true)
+		setLoadMoreFailed(false)
+		const requestGeneration = requestGenerationRef.current
+		const offset = nextOffset
+
+		try {
+			const page = await getFeed<FeedItem>(sort, FEED_PAGE_SIZE, offset)
+			if (requestGeneration !== requestGenerationRef.current) return
+			setArticles((current) => {
+				const existingIds = new Set(current.map((item) => item.id))
+				return [...current, ...page.works.filter((item) => !existingIds.has(item.id))]
+			})
+			setHasMore(page.has_more)
+			setNextOffset(offset + page.works.length)
+		} catch {
+			if (requestGeneration === requestGenerationRef.current) setLoadMoreFailed(true)
+		} finally {
+			loadingMoreRef.current = false
+			if (requestGeneration === requestGenerationRef.current) setLoadingMore(false)
+		}
+	}, [hasMore, loading, nextOffset, sort])
+
+	useEffect(() => {
+		const root = scrollContainerRef.current
+		const target = loadMoreRef.current
+		if (!root || !target || !hasMore || loading || loadMoreFailed) return
+
+		const observer = new IntersectionObserver(([entry]) => {
+			if (entry.isIntersecting) void loadMore()
+		}, { root, rootMargin: "300px 0px", threshold: 0 })
+
+		observer.observe(target)
+		return () => observer.disconnect()
+	}, [hasMore, loadMore, loadMoreFailed, loading])
 
 	const openArticle = async (article: FeedItem) => {
 		setSelectedArticle(article)
@@ -168,7 +239,6 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 						<div className="flex items-center justify-between px-4 py-4">
 							<div className="flex items-center gap-2">
 								<h2 className="font-bold">{feedSortLabels[sort]}</h2>
-								<span className="text-xs text-muted-foreground">{articles.length} 篇内容</span>
 							</div>
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild>
@@ -198,7 +268,7 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 								<p className="mt-1 text-xs text-muted-foreground">发布后的内容会展示在首页。</p>
 							</div>
 						) : (
-							<div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 sm:px-4 ">
+							<div ref={scrollContainerRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 sm:px-4">
 								{articles.map((article) => {
 									const preview = getArticlePreview(article.content)
 									const previewImageSrc = preview.image ? resolveAssetUrl(preview.image) : null
@@ -227,6 +297,11 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 									</article>
 									)
 								})}
+								<div ref={loadMoreRef} className="flex min-h-16 items-center justify-center py-5 text-xs text-muted-foreground" aria-live="polite">
+									{loadingMore ? "正在加载更多文章…" : loadMoreFailed ? (
+										<button type="button" onClick={() => void loadMore()} className="rounded-md px-3 py-1.5 text-red-500 hover:bg-red-50">加载失败，点击重试</button>
+									) : hasMore ? "继续向下滚动加载更多" : "已经到底了"}
+								</div>
 							</div>
 						)}
 					</section>

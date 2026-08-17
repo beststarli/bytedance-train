@@ -11,6 +11,13 @@ import { auth } from './shared'
 
 const router: Router = Router()
 
+function assertPersistedArticleImages(content: unknown) {
+	const value = String(content || '')
+	if (/!\[[^\]]*\]\(\s*(?:blob:|data:image\/)/i.test(value)) {
+		throw new Error('正文包含尚未上传的临时图片，请重新粘贴并等待图片上传完成后再提交')
+	}
+}
+
 // ==================== Works ====================
 
 router.get('/works', async (req: Request, res: Response) => {
@@ -44,6 +51,7 @@ router.post('/works', async (req: Request, res: Response) => {
 	const { title, content, status } = req.body
 	if (status === 'published') {
 		try {
+			assertPersistedArticleImages(content)
 			const submitted = await submitWorkForReview({
 				userId,
 				title: String(title || '未命名作品'),
@@ -72,6 +80,7 @@ router.put('/works/:id', async (req: Request, res: Response) => {
 	const { title, content, status } = req.body
 	if (status === 'published') {
 		try {
+			assertPersistedArticleImages(content)
 			const submitted = await submitWorkForReview({
 				userId,
 				workId: String(req.params.id),

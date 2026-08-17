@@ -2,8 +2,14 @@ import { api } from './api'
 
 export type FeedSort = 'new' | 'hot' | 'likes'
 
+export interface FeedPage<T> {
+    works: T[]
+    total: number
+    has_more: boolean
+}
+
 export function getFeed<T>(sort: FeedSort, limit = 10, offset = 0) {
-    return api<{ works: T[] }>(`/api/content/feed?sort=${sort}&limit=${limit}&offset=${offset}`).then((data) => data.works)
+    return api<FeedPage<T>>(`/api/content/feed?sort=${sort}&limit=${limit}&offset=${offset}`)
 }
 
 export function getHotNews<T>() {
