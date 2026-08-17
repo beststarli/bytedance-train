@@ -29,9 +29,12 @@ export default function HomeClient({ initialHomeData }: { initialHomeData: HomeI
 	const [showLogin, setShowLogin] = useState(false)
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 	const [homeRefreshKey, setHomeRefreshKey] = useState(0)
+	const [initialHomeDataFresh, setInitialHomeDataFresh] = useState(true)
 	const user = useAuthStore((state) => state.user)
 	const navigate = useCallback((menu: string) => {
 		if (!menu.startsWith("create")) window.dispatchEvent(new Event(DRAFT_SYNC_EVENT))
+		// SSR 首页数据只代表首次请求时的快照；离开后再次返回必须重新拉取 Feed。
+		if (!menu.startsWith("content")) setInitialHomeDataFresh(false)
 		setActiveMenu(menu)
 	}, [])
 
@@ -46,7 +49,7 @@ export default function HomeClient({ initialHomeData }: { initialHomeData: HomeI
 			case "create":
 				return <CreatePage key={`create-${privatePageKey}`} initialMode={subview === "manual" || subview === "ai" ? subview : undefined} onNavigate={navigate} />
 			case "content":
-				return <MainPage key={homeRefreshKey} initialData={initialHomeData} onNavigate={navigate} />
+				return <MainPage key={homeRefreshKey} initialData={initialHomeData} refreshFeedOnMount={!initialHomeDataFresh} onNavigate={navigate} />
 			case "inspiration":
 				return <MainPage onNavigate={navigate} mode="inspiration" />
 			case "works":
@@ -79,6 +82,7 @@ export default function HomeClient({ initialHomeData }: { initialHomeData: HomeI
 				collapsed={sidebarCollapsed}
 				onCollapsedChange={setSidebarCollapsed}
 				onHomeRefresh={() => {
+					setInitialHomeDataFresh(false)
 					navigate("content")
 					setHomeRefreshKey((key) => key + 1)
 				}}

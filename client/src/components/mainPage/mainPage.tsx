@@ -41,6 +41,7 @@ interface MainPageProps {
 	onNavigate?: (menu: string) => void
 	mode?: "inspiration"
 	initialData?: HomeInitialData
+	refreshFeedOnMount?: boolean
 }
 
 function getArticlePreview(content: string) {
@@ -91,7 +92,7 @@ function ArticleMarkdown({ content }: { content: string }) {
 	)
 }
 
-function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigate" | "initialData">) {
+function ContentHome({ onNavigate, initialData, refreshFeedOnMount }: Pick<MainPageProps, "onNavigate" | "initialData" | "refreshFeedOnMount">) {
 	const [articles, setArticles] = useState<FeedItem[]>(initialData?.articles ?? [])
 	const [loading, setLoading] = useState(!initialData)
 	const [loadingMore, setLoadingMore] = useState(false)
@@ -110,7 +111,7 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 	const requestGenerationRef = useRef(0)
 
 	useEffect(() => {
-		if (!initialSortHandled.current && initialData && sort === "new") {
+		if (!initialSortHandled.current && initialData && sort === "new" && !refreshFeedOnMount) {
 			initialSortHandled.current = true
 			return
 		}
@@ -139,7 +140,7 @@ function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigat
 		return () => {
 			cancelled = true
 		}
-	}, [initialData, sort])
+	}, [initialData, refreshFeedOnMount, sort])
 
 	const loadMore = useCallback(async () => {
 		if (loading || loadingMoreRef.current || !hasMore) return
@@ -414,7 +415,7 @@ function InspirationView({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 	)
 }
 
-export default function MainPage({ onNavigate, mode, initialData }: MainPageProps) {
+export default function MainPage({ onNavigate, mode, initialData, refreshFeedOnMount }: MainPageProps) {
 	if (mode === "inspiration") return <InspirationView onNavigate={onNavigate} />
-	return <ContentHome initialData={initialData} onNavigate={onNavigate} />
+	return <ContentHome initialData={initialData} refreshFeedOnMount={refreshFeedOnMount} onNavigate={onNavigate} />
 }
