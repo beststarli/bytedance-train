@@ -16,6 +16,7 @@ import {
 	SlidersHorizontal,
 } from "lucide-react"
 import { FeedSort, getFeed, getFeedWork, toggleFeedReaction } from "@/api/feed"
+import { getHotNews } from "@/api/discovery"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -36,12 +37,66 @@ const feedSortLabels: Record<FeedSort, string> = {
 }
 
 const FEED_PAGE_SIZE = 10
+const HOT_NEWS_MAX_ATTEMPTS = 3
+const HOT_NEWS_RETRY_INTERVAL_MS = 1_000
+const HOT_NEWS_ATTEMPT_TIMEOUT_MS = 5_000
 
 interface MainPageProps {
 	onNavigate?: (menu: string) => void
 	mode?: "inspiration"
 	initialData?: HomeInitialData
 	refreshFeedOnMount?: boolean
+}
+
+function abortError() {
+	return new DOMException("热点新闻请求已取消", "AbortError")
+}
+
+function waitForHotNewsRetry(signal: AbortSignal) {
+	let timeoutId: number | undefined
+	let rejectOnAbort: (() => void) | undefined
+	const delay = new Promise<void>((resolve) => {
+		timeoutId = window.setTimeout(resolve, HOT_NEWS_RETRY_INTERVAL_MS)
+	})
+	const aborted = new Promise<never>((_, reject) => {
+		if (signal.aborted) return reject(abortError())
+		rejectOnAbort = () => reject(abortError())
+		signal.addEventListener("abort", rejectOnAbort, { once: true })
+	})
+	return Promise.race([delay, aborted]).finally(() => {
+		if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+		if (rejectOnAbort) signal.removeEventListener("abort", rejectOnAbort)
+	})
+}
+
+async function getHotNewsWithRetry(signal: AbortSignal) {
+	let lastError: unknown
+	for (let attempt = 1; attempt <= HOT_NEWS_MAX_ATTEMPTS; attempt += 1) {
+		if (signal.aborted) throw abortError()
+		const attemptController = new AbortController()
+		const abortAttempt = () => attemptController.abort()
+		signal.addEventListener("abort", abortAttempt, { once: true })
+		let timeoutId: number | undefined
+		try {
+			return await Promise.race([
+				getHotNews<{ articles: HotNewsItem[]; configured: boolean }>(attemptController.signal),
+				new Promise<never>((_, reject) => {
+					timeoutId = window.setTimeout(() => {
+						attemptController.abort()
+						reject(new Error("热点新闻请求超时"))
+					}, HOT_NEWS_ATTEMPT_TIMEOUT_MS)
+				}),
+			])
+		} catch (error) {
+			if (signal.aborted) throw abortError()
+			lastError = error
+			if (attempt < HOT_NEWS_MAX_ATTEMPTS) await waitForHotNewsRetry(signal)
+		} finally {
+			if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+			signal.removeEventListener("abort", abortAttempt)
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("热点新闻请求失败")
 }
 
 function getArticlePreview(content: string) {
@@ -101,14 +156,35 @@ function ContentHome({ onNavigate, initialData, refreshFeedOnMount }: Pick<MainP
 	const [loadMoreFailed, setLoadMoreFailed] = useState(false)
 	const [sort, setSort] = useState<FeedSort>("new")
 	const [selectedArticle, setSelectedArticle] = useState<FeedItem | null>(null)
-	const [hotNews] = useState<HotNewsItem[]>(initialData?.hotNews ?? [])
-	const [newsConfigured] = useState(initialData?.newsConfigured ?? false)
+	const [hotNews, setHotNews] = useState<HotNewsItem[]>(initialData?.hotNews ?? [])
+	const [newsConfigured, setNewsConfigured] = useState(initialData?.newsConfigured ?? false)
+	const [newsLoading, setNewsLoading] = useState(true)
+	const [newsLoadFailed, setNewsLoadFailed] = useState(false)
 	const [hotArticles] = useState<FeedItem[]>(initialData?.hotArticles ?? [])
 	const initialSortHandled = useRef(false)
 	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const loadMoreRef = useRef<HTMLDivElement>(null)
 	const loadingMoreRef = useRef(false)
 	const requestGenerationRef = useRef(0)
+
+	useEffect(() => {
+		const controller = new AbortController()
+		setNewsLoading(true)
+		setNewsLoadFailed(false)
+		getHotNewsWithRetry(controller.signal)
+			.then((data) => {
+				setHotNews(data.articles || [])
+				setNewsConfigured(data.configured)
+			})
+			.catch((error) => {
+				if (error instanceof DOMException && error.name === "AbortError") return
+				setNewsLoadFailed(true)
+			})
+			.finally(() => {
+				if (!controller.signal.aborted) setNewsLoading(false)
+			})
+		return () => controller.abort()
+	}, [])
 
 	useEffect(() => {
 		if (!initialSortHandled.current && initialData && sort === "new" && !refreshFeedOnMount) {
@@ -317,10 +393,14 @@ function ContentHome({ onNavigate, initialData, refreshFeedOnMount }: Pick<MainP
 								<span className="h-2 w-2 rounded-full bg-red-500" />
 							</div>
 							<div className="min-h-[170px]">
-								{hotNews.length ? (
+								{newsLoading ? (
+									<div className="space-y-2 py-1" aria-label="正在加载热点新闻">
+										{Array.from({ length: 5 }).map((_, index) => <div key={index} className="h-7 animate-pulse rounded-md bg-muted/70" />)}
+									</div>
+								) : hotNews.length ? (
 									<div>{hotNews.slice(0, 5).map((news, index) => <a key={news.url} href={news.url} target="_blank" rel="noreferrer" className="group flex gap-2.5 rounded-lg px-1 py-1.5 hover:bg-muted/60"><span className="text-xs font-bold text-red-500">{String(index + 1).padStart(2, "0")}</span><span><span className="line-clamp-1 text-xs font-medium leading-5 group-hover:text-red-600">{news.title}</span><span className="block text-[10px] text-muted-foreground">{news.source?.name || "新闻来源"}</span></span></a>)}</div>
 								) : (
-									<div className="flex min-h-[170px] items-center justify-center rounded-lg border border-dashed px-3 text-center text-xs text-muted-foreground">{newsConfigured ? "热点新闻暂时不可用" : "配置 GNEWS_API_KEY 后显示实时热点"}</div>
+									<div className="flex min-h-[170px] items-center justify-center rounded-lg border border-dashed px-3 text-center text-xs text-muted-foreground">{newsLoadFailed || newsConfigured ? "热点新闻暂时不可用" : "配置 GNEWS_API_KEY 后显示实时热点"}</div>
 								)}
 							</div>
 						</section>

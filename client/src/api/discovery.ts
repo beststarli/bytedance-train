@@ -7,3 +7,7 @@ export function getNotifications<T>() {
 export function searchContent<T>(query: string) {
     return api<T>(`/api/content/search?q=${encodeURIComponent(query)}`)
 }
+
+export function getHotNews<T>(signal?: AbortSignal) {
+    return api<T>('/api/content/hot-news', { signal })
+}

@@ -622,7 +622,7 @@ interface CreatePageProps {
 	onNavigate?: (menu: string) => void
 }
 
-export default function CreatePage({ onNavigate }: CreatePageProps) {
+export default function CreatePage({ initialMode, onNavigate }: CreatePageProps) {
 	const user = useAuthStore((s) => s.user)
 	const [chats, setChats] = useState<Chat[]>([])
 	const [activeChatId, setActiveChatId] = useState<string | null>(null)
@@ -634,7 +634,7 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const [modelType, setModelType] = useState<string | undefined>(undefined)
 	const [loadingChats, setLoadingChats] = useState(true)
 	const [generationStates, setGenerationStates] = useState<Record<string, ChatGenerationState>>({})
-	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>('ai')
+	const [creationMode, setCreationMode] = useState<'manual' | 'ai' | null>(initialMode || 'ai')
 	const { id: editingWorkId, title: draftTitle, content: draftContent, setTitle: setDraftTitle, setContent: setDraftContent, markSaved, clear: clearEditor } = useEditorStore()
 	const [publishing, setPublishing] = useState(false)
 	const [uploadingPastedImage, setUploadingPastedImage] = useState(false)
@@ -660,6 +660,10 @@ export default function CreatePage({ onNavigate }: CreatePageProps) {
 	const generationStatesRef = useRef<Record<string, ChatGenerationState>>({})
 	const streamAbortByChatRef = useRef<Map<string, AbortController>>(new Map())
 	const currentUserMessageIdByChatRef = useRef<Map<string, string>>(new Map())
+
+	useEffect(() => {
+		if (initialMode) setCreationMode(initialMode)
+	}, [initialMode])
 	const requestCounterByChatRef = useRef<Map<string, number>>(new Map())
 	const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null)
 	const composingRef = useRef(false)
