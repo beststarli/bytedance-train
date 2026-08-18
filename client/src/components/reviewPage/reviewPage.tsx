@@ -116,6 +116,14 @@ const severityMeta = {
   critical: { label: "严重风险", className: "bg-red-50 text-red-600" },
 }
 
+const agentStepLabels: Record<string, string> = {
+  normalize_content: "内容标准化",
+  deterministic_rule_scan: "确定性规则扫描",
+  retrieve_policy_context: "检索审核策略",
+  ai_safety_quality_review: "AI 安全与质量审核",
+  policy_decision: "生成审核决策",
+}
+
 function effectiveStatus(item: ReviewListItem) {
   return item.job_status === "queued" || item.job_status === "running" ? item.job_status : item.review_status
 }
@@ -430,7 +438,7 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
                         <div key={`${step.step_name}-${index}`} className="relative flex gap-2 pb-4 last:pb-0">
                           {index < detail.steps.length - 1 && <span className="absolute left-[5px] top-3 h-full w-px bg-border" />}
                           <span className={cn("relative mt-1 h-3 w-3 shrink-0 rounded-full border-2 bg-card", step.status === "completed" ? "border-emerald-500" : step.status === "failed" ? "border-red-500" : "border-blue-500")} />
-                          <div><div className="text-[11px] font-medium">{step.step_name}</div><div className="mt-0.5 text-[10px] text-muted-foreground">{step.status === "completed" ? "已完成" : step.status === "failed" ? step.error || "执行失败" : "执行中"}</div></div>
+                          <div><div className="text-[11px] font-medium">{agentStepLabels[step.step_name] || step.step_name}</div><div className="mt-0.5 text-[10px] text-muted-foreground">{step.status === "completed" ? "已完成" : step.status === "failed" ? step.error || "执行失败" : "执行中"}</div></div>
                         </div>
                       )) : <div className="text-[11px] text-muted-foreground">等待 Agent 开始执行</div>}
                     </div>
