@@ -6,5 +6,5 @@ import type { HomeInitialData } from "@/types/home"
 
 export default function HomeRoute({ initialData }: { initialData: HomeInitialData }) {
 	const navigate = useWorkspaceNavigation()
-	return <MainPage initialData={initialData} refreshFeedOnMount onNavigate={navigate} />
+	return <MainPage initialData={initialData} onNavigate={navigate} />
 }

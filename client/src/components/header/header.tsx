@@ -28,7 +28,7 @@ import {
 import { useAuthStore } from '@/store/userStore'
 import { logoutSession } from '@/api/api'
 import { getNotifications, searchContent } from '@/api/discovery'
-import { resolveAssetUrl } from '@/lib/asset-url'
+import { resolveAssetUrl } from '@/lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import ThemeToggle from '@/components/header/theme-toggle'
 

@@ -37,10 +37,9 @@ import { createChat, deleteChat, generateChatStream, getChatMessages, getChats, 
 import { getMaterials, uploadMaterial } from '@/api/materials'
 import { getPrompts } from '@/api/prompts'
 import { saveWork } from '@/api/works'
-import { cn, createClientId } from '@/lib/utils'
+import { cn, createClientId, fileAsDataUrl, resolveAssetUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { clearTaskProgress, emitTaskProgress } from '@/components/taskProgress'
-import { resolveAssetUrl } from '@/lib/asset-url'
 import { useEditorStore } from '@/store/editorStore'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { removeLocalDraft, useDraftAutosave } from '@/hooks/useDraftAutosave'
@@ -342,15 +341,6 @@ function editorHtmlToMarkdown(editor: HTMLDivElement) {
 		}
 		return content
 	}).join('\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
-}
-
-function fileAsDataUrl(file: File) {
-	return new Promise<string>((resolve, reject) => {
-		const reader = new FileReader()
-		reader.onload = () => resolve(String(reader.result || ''))
-		reader.onerror = () => reject(new Error('读取剪贴板图片失败'))
-		reader.readAsDataURL(file)
-	})
 }
 
 function createCaretParagraph() {
@@ -711,10 +701,10 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 		setInputValue('')
 		setModelType(undefined)
 		setSelectedPromptCategory(null)
-			setDeleteChatTarget(null)
-			setRenamingChat(null)
-			setAttachments([])
-			setFloatingSelection(null)
+		setDeleteChatTarget(null)
+		setRenamingChat(null)
+		setAttachments([])
+		setFloatingSelection(null)
 		setLoadingChats(!!user)
 		if (!user) return
 		Promise.all([
@@ -776,11 +766,6 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 			cancelled = true
 		}
 	}, [activeChatId])
-
-	// 自动滚动到底部
-	useEffect(() => {
-		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-	}, [messages])
 
 	// 回到新对话起始页；首次发送时再创建服务端会话，避免产生空对话。
 	const handleNewChat = useCallback(() => {
@@ -873,12 +858,7 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 		}
 		setUploadingAttachment(true)
 		try {
-			const data = await new Promise<string>((resolve, reject) => {
-				const reader = new FileReader()
-				reader.onload = () => resolve(String(reader.result || ''))
-				reader.onerror = () => reject(new Error('读取图片失败'))
-				reader.readAsDataURL(file)
-			})
+			const data = await fileAsDataUrl(file)
 			const attachment = await uploadAiAttachment<{ url: string; filename: string }>({ filename: file.name, data })
 			addAttachment({ id: createClientId(), ...attachment, source: 'upload' })
 		} catch (error) {
@@ -994,8 +974,8 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 
 		const trimmedContent = content.trim()
 		const generationType = referencedImages.length || modelType === 'image' ? 'image' : 'text'
-			setInputValue('')
-			setAttachments([])
+		setInputValue('')
+		setAttachments([])
 		updateChatGeneration(chatId, {
 			sending: true,
 			generationType,
@@ -1030,6 +1010,10 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 		if (activeChatIdRef.current === chatId) {
 			messagesRef.current = initialMessages
 			setMessages(initialMessages)
+			// 用户发送时拉一次到底部；rAF 等待 React 提交新消息后再滚，流式输出期间不再抢滚动
+			requestAnimationFrame(() => {
+				messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+			})
 		}
 		currentUserMessageIdByChatRef.current.set(chatId, tempId)
 
@@ -1042,10 +1026,10 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 			}
 		}
 
-			let revealCancelled = false
-			const abortController = new AbortController()
-			streamAbortByChatRef.current.set(chatId, abortController)
-			try {
+		let revealCancelled = false
+		const abortController = new AbortController()
+		streamAbortByChatRef.current.set(chatId, abortController)
+		try {
 			const response = await generateChatStream(chatId, {
 				content: trimmedContent,
 				modelType: referencedImages.length ? 'image' : modelType,
@@ -1075,10 +1059,7 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 						const step = queuedContent.length > 600 ? 12 : queuedContent.length > 200 ? 6 : queuedContent.length > 60 ? 3 : 1
 						displayedContent += queuedContent.slice(0, step)
 						queuedContent = queuedContent.slice(step)
-						if (
-							sessionId === requestCounter.current
-							&& requestId === requestCounterByChatRef.current.get(chatId)
-						) {
+						if (sessionId === requestCounter.current && requestId === requestCounterByChatRef.current.get(chatId)) {
 							updateStreamingMessages((prev) =>
 								prev.map((message) =>
 									message.id === aiId ? { ...message, content: displayedContent } : message
@@ -1105,23 +1086,23 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 					try {
 						const data = JSON.parse(line.slice(6))
 						switch (data.type) {
-						case 'status':
+							case 'status':
 								updateChatGeneration(chatId, {
 									sending: true,
 									thinkingStage: data.message,
 									generationType: data.model_type === 'image' ? 'image' : generationStatesRef.current[chatId]?.generationType || generationType,
 								})
 								break
-								case 'user_message':
+							case 'user_message':
 								// 用服务端返回的消息替换临时消息
-									updateStreamingMessages((prev) =>
-										prev.map((m) => (m.id === tempId ? data.message : m))
-									)
-									currentUserMessageIdByChatRef.current.set(chatId, data.message.id)
-									setInterruptedMessageIds((current) => current[chatId] === tempId
-										? { ...current, [chatId]: data.message.id }
-										: current)
-									break
+								updateStreamingMessages((prev) =>
+									prev.map((m) => (m.id === tempId ? data.message : m))
+								)
+								currentUserMessageIdByChatRef.current.set(chatId, data.message.id)
+								setInterruptedMessageIds((current) => current[chatId] === tempId
+									? { ...current, [chatId]: data.message.id }
+									: current)
+								break
 
 							case 'chunk':
 								updateChatGeneration(chatId, { sending: true, thinkingStage: 'AI 正在思考', generationType })
@@ -1178,23 +1159,23 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 			])
 			setChats(chatItems)
 			setMaterials(materialItems)
-				} catch (error) {
-					revealCancelled = true
-					if (error instanceof DOMException && error.name === 'AbortError') {
-						setInterruptedMessageForChat(chatId, currentUserMessageIdByChatRef.current.get(chatId) || null)
-						updateStreamingMessages((prev) => prev.map((message) =>
-							message.id === aiId
-								? { ...message, content: message.content || '已中断本次生成。' }
-								: message
-						))
-						return
-					}
-				// 保留用户输入，并将 AI 占位改为可见的失败提示
-				const failureMessage = error instanceof Error ? error.message : '生成失败，请稍后重试。'
-				updateStreamingMessages((prev) =>
-					prev.map((m) =>
-						m.id === aiId
-							? { ...m, content: failureMessage }
+		} catch (error) {
+			revealCancelled = true
+			if (error instanceof DOMException && error.name === 'AbortError') {
+				setInterruptedMessageForChat(chatId, currentUserMessageIdByChatRef.current.get(chatId) || null)
+				updateStreamingMessages((prev) => prev.map((message) =>
+					message.id === aiId
+						? { ...message, content: message.content || '已中断本次生成。' }
+						: message
+				))
+				return
+			}
+			// 保留用户输入，并将 AI 占位改为可见的失败提示
+			const failureMessage = error instanceof Error ? error.message : '生成失败，请稍后重试。'
+			updateStreamingMessages((prev) =>
+				prev.map((m) =>
+					m.id === aiId
+						? { ...m, content: failureMessage }
 						: m
 				)
 			)
@@ -1203,14 +1184,14 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 				updateChatGeneration(chatId, { sending: false, thinkingStage: '', generationType })
 				streamAbortByChatRef.current.delete(chatId)
 			}
-			}
-		}, [modelType, setInterruptedMessageForChat, updateChatGeneration])
+		}
+	}, [modelType, setInterruptedMessageForChat, updateChatGeneration])
 
 	// 发送消息（已有聊天）
 	const handleSend = useCallback(async () => {
 		if (!inputValue.trim() || !activeChatId || sending) return
-			await sendStreamingMessage(activeChatId, inputValue, attachments)
-		}, [inputValue, activeChatId, sending, sendStreamingMessage, attachments])
+		await sendStreamingMessage(activeChatId, inputValue, attachments)
+	}, [inputValue, activeChatId, sending, sendStreamingMessage, attachments])
 
 	// 新建聊天并发送消息
 	const handleCreateAndSend = useCallback(async () => {
@@ -1225,11 +1206,11 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 			setActiveChatId(chat.id)
 
 			// 再流式发送
-				await sendStreamingMessage(chat.id, content, attachments)
+			await sendStreamingMessage(chat.id, content, attachments)
 		} catch {
 			// 创建聊天失败不需要额外处理
 		}
-		}, [inputValue, sending, sendStreamingMessage, attachments])
+	}, [inputValue, sending, sendStreamingMessage, attachments])
 
 	const handlePromptClick = useCallback((prompt: Prompt) => {
 		setInputValue((current) => `${current}${current.trim() ? '\n\n' : ''}${prompt.content}`)
@@ -1262,11 +1243,11 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 			if (editor.contains(range.commonAncestorContainer)) {
 				const holder = document.createElement('div')
 				holder.innerHTML = markdownToEditorHtml(markdown)
-					const materialNode = holder.firstElementChild
-					if (materialNode) {
-						range.deleteContents()
-						range.insertNode(materialNode)
-						range.setStartAfter(materialNode)
+				const materialNode = holder.firstElementChild
+				if (materialNode) {
+					range.deleteContents()
+					range.insertNode(materialNode)
+					range.setStartAfter(materialNode)
 					range.collapse(true)
 					selection.removeAllRanges()
 					selection.addRange(range)
@@ -1410,9 +1391,9 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 		setClearingEditor(true)
 		try {
 			const work = await saveWork<{ id: string }>(editingWorkId, {
-					title: draftTitle.trim() || '未输入标题',
-					content: draftContent.trim(),
-					status: 'draft',
+				title: draftTitle.trim() || '未输入标题',
+				content: draftContent.trim(),
+				status: 'draft',
 			})
 			markSaved(work.id)
 			clearEditor()
@@ -1494,14 +1475,14 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 						</div>
 						<div className="workspace-card overflow-hidden">
 							<input disabled={!isLoggedIn} value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} placeholder={isLoggedIn ? "输入文章标题" : "登录后开始写作"} className="w-full border-b bg-transparent px-7 py-6 text-2xl font-bold outline-none placeholder:text-muted-foreground/40 disabled:cursor-not-allowed disabled:bg-muted/25" />
-								<InlineArticleEditor
+							<InlineArticleEditor
 								content={draftContent}
 								onChange={setDraftContent}
 								editorRef={draftEditorRef}
-									disabled={!isLoggedIn}
-									onTextSelection={setFloatingSelection}
-									onImageUploaded={registerPastedMaterial}
-									onImageUploadStateChange={setUploadingPastedImage}
+								disabled={!isLoggedIn}
+								onTextSelection={setFloatingSelection}
+								onImageUploaded={registerPastedMaterial}
+								onImageUploadStateChange={setUploadingPastedImage}
 							/>
 						</div>
 					</div>
@@ -1545,15 +1526,15 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 						placeholder={isLoggedIn ? "输入文章标题" : "登录后开始写作"}
 						className="h-14 w-full shrink-0 bg-transparent px-4 text-xl font-bold outline-none placeholder:text-muted-foreground/40 disabled:cursor-not-allowed disabled:bg-muted/25"
 					/>
-						<InlineArticleEditor
+					<InlineArticleEditor
 						content={draftContent}
 						onChange={setDraftContent}
 						editorRef={draftEditorRef}
 						fillHeight
-							disabled={!isLoggedIn}
-							onTextSelection={setFloatingSelection}
-							onImageUploaded={registerPastedMaterial}
-							onImageUploadStateChange={setUploadingPastedImage}
+						disabled={!isLoggedIn}
+						onTextSelection={setFloatingSelection}
+						onImageUploaded={registerPastedMaterial}
+						onImageUploadStateChange={setUploadingPastedImage}
 					/>
 				</div>
 			</section>
@@ -1680,7 +1661,7 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 													onMouseUp={msg.role === 'assistant' ? captureAssistantSelection : undefined}
 													className={cn(
 														'max-w-[75%] text-sm leading-6 whitespace-pre-wrap',
-								msg.role === 'assistant' && !msg.content && sending && activeGenerationType === 'image'
+														msg.role === 'assistant' && !msg.content && sending && activeGenerationType === 'image'
 															? 'border-0 bg-transparent p-0 shadow-none'
 															: msg.role === 'user'
 																? 'rounded-xl rounded-br-md border border-red-500 bg-red-500 px-4 py-3.5 text-white'
@@ -1690,7 +1671,7 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 													{msg.role === 'assistant' && !msg.content && sending ? (
 														activeGenerationType === 'image' ? (
 															<div className="w-72 overflow-hidden rounded-xl border border-red-100 bg-gradient-to-br from-red-50 via-white to-orange-50 p-3 shadow-sm" aria-label="AI 正在绘制图片">
-														<div className="relative mb-3 flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-card/70">
+																<div className="relative mb-3 flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-card/70">
 																	<div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-red-100/70 to-transparent" />
 																	<div className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-red-500 text-white shadow-sm">
 																		<ImageIcon className="h-5 w-5 animate-pulse" />
@@ -1704,14 +1685,14 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 																	<div className="mt-1 text-[10px] text-muted-foreground">正在构图、处理光影与画面细节…</div>
 																</div>
 															</div>
-												) : (
+														) : (
 															<div className="flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-label={thinkingStage || "AI 正在思考"}>
 																<span className="flex items-center gap-1">
 																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '0ms' }} />
 																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '150ms' }} />
 																	<span className="h-1.5 w-1.5 animate-bounce rounded-full bg-red-400" style={{ animationDelay: '300ms' }} />
 																</span>
-																	<span>{thinkingStage || 'AI 正在思考'}</span>
+																<span>{thinkingStage || 'AI 正在思考'}</span>
 															</div>
 														)
 													) : msg.role === 'assistant' ? (
@@ -1726,26 +1707,26 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 															/>
 															{sending && msg.id.startsWith('ai-') && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-red-500 align-middle" aria-hidden="true" />}
 														</div>
-														) : (
-															<div>
-																<MarkdownContent content={msg.content} />
-																{interruptedMessageId === msg.id && (
-																	<button
-																		type="button"
-																		onClick={() => {
-																			const withoutImages = msg.content.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, '').trim()
-																			setInputValue(withoutImages)
-																			if (activeChatId) setInterruptedMessageForChat(activeChatId, null)
-																			requestAnimationFrame(() => inputRef.current?.focus())
-																		}}
-																		className="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-white/25"
-																	>
-																		<RotateCcw className="h-3 w-3" />
-																		修改后重发
-																	</button>
-																)}
-															</div>
-														)}
+													) : (
+														<div>
+															<MarkdownContent content={msg.content} />
+															{interruptedMessageId === msg.id && (
+																<button
+																	type="button"
+																	onClick={() => {
+																		const withoutImages = msg.content.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, '').trim()
+																		setInputValue(withoutImages)
+																		if (activeChatId) setInterruptedMessageForChat(activeChatId, null)
+																		requestAnimationFrame(() => inputRef.current?.focus())
+																	}}
+																	className="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-white/25"
+																>
+																	<RotateCcw className="h-3 w-3" />
+																	修改后重发
+																</button>
+															)}
+														</div>
+													)}
 													{msg.role === 'assistant' && msg.content && msg.content !== '生成失败，请稍后重试。' && !sending && (
 														<div className="mt-3 border-t pt-2">
 															<button
@@ -1783,7 +1764,7 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 														key={category.id}
 														type="button"
 														onClick={() => setSelectedPromptCategory(category.id)}
-												className="focus-red inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/35"
+														className="focus-red inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/35"
 													>
 														<Icon className="h-3.5 w-3.5" />
 														{category.title}
@@ -1831,10 +1812,10 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 												className="scrollBar-hidden block min-h-9 max-h-[200px] w-full resize-none overflow-y-auto border-none bg-transparent py-1.5 text-sm outline-none placeholder:text-muted-foreground"
 												rows={1}
 												onKeyDown={(e) => handleComposerKeyDown(e, () => void handleSend())}
-													onInput={(e) => {
-														resizeInputTextarea(e.currentTarget)
-													}}
-												/>
+												onInput={(e) => {
+													resizeInputTextarea(e.currentTarget)
+												}}
+											/>
 											{composerDragActive && (
 												<div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-md border border-dashed border-red-400 bg-background/90 text-xs font-semibold text-red-500 backdrop-blur-sm">
 													松开以引用这张图片
@@ -1893,24 +1874,24 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 												))}
 											</div>
 										)}
-								<div
-									onDragEnter={(event) => {
-										if (event.dataTransfer.types.includes('application/x-creator-material')) setComposerDragActive(true)
-									}}
-									onDragOver={(event) => {
-										if (!event.dataTransfer.types.includes('application/x-creator-material')) return
-										event.preventDefault()
-										event.dataTransfer.dropEffect = 'copy'
-									}}
-									onDragLeave={(event) => {
-										if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setComposerDragActive(false)
-									}}
-									onDrop={handleComposerMaterialDrop}
-									className={cn(
-										"relative min-h-16 rounded-lg border bg-card px-4 py-1 pr-36 transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5",
-										composerDragActive && "border-red-400 bg-red-50/70 ring-4 ring-red-500/10 dark:bg-red-950/25",
-									)}
-								>
+										<div
+											onDragEnter={(event) => {
+												if (event.dataTransfer.types.includes('application/x-creator-material')) setComposerDragActive(true)
+											}}
+											onDragOver={(event) => {
+												if (!event.dataTransfer.types.includes('application/x-creator-material')) return
+												event.preventDefault()
+												event.dataTransfer.dropEffect = 'copy'
+											}}
+											onDragLeave={(event) => {
+												if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setComposerDragActive(false)
+											}}
+											onDrop={handleComposerMaterialDrop}
+											className={cn(
+												"relative min-h-16 rounded-lg border bg-card px-4 py-1 pr-36 transition-all focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-500/5",
+												composerDragActive && "border-red-400 bg-red-50/70 ring-4 ring-red-500/10 dark:bg-red-950/25",
+											)}
+										>
 											<textarea
 												ref={inputRef}
 												value={inputValue}
@@ -1922,9 +1903,9 @@ export default function CreatePage({ initialMode, onNavigate }: CreatePageProps)
 												className="scrollBar-hidden block min-h-9 max-h-[200px] w-full resize-none overflow-y-auto border-none bg-transparent py-1.5 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
 												rows={1}
 												onKeyDown={(e) => handleComposerKeyDown(e, () => void handleCreateAndSend())}
-													onInput={(e) => {
-														resizeInputTextarea(e.currentTarget)
-													}}
+												onInput={(e) => {
+													resizeInputTextarea(e.currentTarget)
+												}}
 											/>
 											{composerDragActive && (
 												<div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-md border border-dashed border-red-400 bg-background/90 text-xs font-semibold text-red-500 backdrop-blur-sm">

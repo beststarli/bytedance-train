@@ -14,7 +14,9 @@ export const useAuthStore = create<AuthStore>()((set) => ({
     user: null,
     token: null,
     setAuth: (user, token) => set((state) => {
-        if (state.user?.id !== user.id) useEditorStore.getState().clear()
+        if (state.user?.id !== user.id) {
+            useEditorStore.getState().clear()
+        }
         return { user, token }
     }),
     setToken: (token) => set({ token }),
