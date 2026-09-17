@@ -22,7 +22,7 @@ import { useAuthStore } from "@/store/userStore"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { resolveAssetUrl } from "@/lib/asset-url"
+import { fileAsDataUrl, resolveAssetUrl } from "@/lib/utils"
 import { toast } from "sonner"
 import {
 	Dialog,
@@ -183,12 +183,7 @@ export default function UserPage({ onNavigate, onLoginClick }: UserPageProps) {
 			return
 		}
 		try {
-			const image = await new Promise<string>((resolve, reject) => {
-				const reader = new FileReader()
-				reader.onload = () => resolve(reader.result as string)
-				reader.onerror = reject
-				reader.readAsDataURL(file)
-			})
+			const image = await fileAsDataUrl(file)
 			setAvatarSource(image)
 			setAvatarImageSize({ width: 0, height: 0 })
 			setCropOffset({ x: 0, y: 0 })

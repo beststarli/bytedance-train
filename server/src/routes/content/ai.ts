@@ -60,7 +60,6 @@ async function imageAttachmentsAsDataUrls(attachments: ImageAttachment[]) {
 }
 
 // ==================== AI 生成（SSE 流式，文本/图片通用） ====================
-
 router.post('/chats/:id/generate-stream', async (req: Request, res: Response) => {
 	const userId = auth(req, res)
 	if (!userId) return
@@ -93,7 +92,7 @@ router.post('/chats/:id/generate-stream', async (req: Request, res: Response) =>
 	res.setHeader('Cache-Control', 'no-cache')
 	res.setHeader('Connection', 'keep-alive')
 	res.setHeader('X-Accel-Buffering', 'no')
-	// Disable Nagle to prevent TCP buffering of small SSE chunks
+	// 关闭Nagle算法，防止小包内容写入缓存，确保数据立即发送到客户端
 	req.socket?.setNoDelay(true)
 	res.flushHeaders()
 	const generationController = new AbortController()

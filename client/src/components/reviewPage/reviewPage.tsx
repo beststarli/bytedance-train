@@ -357,6 +357,12 @@ export default function ReviewPage({ onNavigate }: { onNavigate?: (menu: string)
 
       <Dialog open={detailLoading || !!detail} onOpenChange={(open) => { if (!open && !actionLoading) setDetail(null) }}>
         <DialogContent className="scrollBar-hidden max-h-[90dvh] overflow-y-auto sm:max-w-5xl">
+          {!detail && (
+            <DialogHeader className="sr-only">
+              <DialogTitle>审核详情</DialogTitle>
+              <DialogDescription>正在读取作品的审核结论、风险问题和 Agent 执行轨迹。</DialogDescription>
+            </DialogHeader>
+          )}
           {detailLoading && !detail ? (
             <div className="flex min-h-80 items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在读取审核轨迹</div>
           ) : detail ? (

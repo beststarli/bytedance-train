@@ -98,7 +98,6 @@ queued → running → completed
 - `POST /api/content/rewrite-proposals/:id/reject`：用户明确保留原文并记录决定。
 
 ## 生产化演进
-
 - 将进程内任务触发替换为 BullMQ / Redis Streams 等持久队列，多实例部署时避免重复消费。
 - 为 `review_policies` 增加 pgvector、政策版本号和生效时间，形成可审计的混合检索。
 - 为审核建立人工复核与申诉队列，AI 不应成为无法追责的单点裁决。

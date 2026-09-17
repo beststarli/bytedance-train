@@ -23,50 +23,50 @@ type Message = { role: 'user' | 'assistant' | 'system'; content: string }
  * 取 2.0 作为统一基准（偏保守 = 更安全）
  */
 export function countTokens(text: string): number {
-  if (!text) return 0
-  // 纯英文+数字占比高时实际 token 更少，但保守估算没问题
-  return Math.ceil(text.length / 2)
+    if (!text) return 0
+    // 纯英文+数字占比高时实际 token 更少，但保守估算没问题
+    return Math.ceil(text.length / 2)
 }
 
 export function countMessagesTokens(
-  messages: Message[]
+    messages: Message[]
 ): number {
-  // 每条消息有 role 等元数据开销，约 +4 tokens
-  return messages.reduce(
-    (sum, m) => sum + countTokens(m.content) + 4,
-    0
-  )
+    // 每条消息有 role 等元数据开销，约 +4 tokens
+    return messages.reduce(
+        (sum, m) => sum + countTokens(m.content) + 4,
+        0
+    )
 }
 
 // ==================== 窗口配置 ====================
 
 export interface ContextConfig {
-  /** 模型最大 token 数（doubao-seed-2.0-lite 为 128K） */
-  modelMaxTokens: number
-  /** 为回复预留的 token 数 */
-  reservedForResponse: number
-  /** system prompt 预估 token 数 */
-  systemPromptTokens: number
-  /** 历史摘要 token 数上限 */
-  maxSummaryTokens: number
+    /** 模型最大 token 数（doubao-seed-2.0-lite 为 128K） */
+    modelMaxTokens: number
+    /** 为回复预留的 token 数 */
+    reservedForResponse: number
+    /** system prompt 预估 token 数 */
+    systemPromptTokens: number
+    /** 历史摘要 token 数上限 */
+    maxSummaryTokens: number
 }
 
 export const DEFAULT_TEXT_CONFIG: ContextConfig = {
-  modelMaxTokens: 128_000,
-  reservedForResponse: 4096,
-  systemPromptTokens: 300,
-  maxSummaryTokens: 1024,
+    modelMaxTokens: 128_000,
+    reservedForResponse: 4096,
+    systemPromptTokens: 300,
+    maxSummaryTokens: 1024,
 }
 
 // ==================== 滑动窗口截断 ====================
 
 export interface TruncateResult {
-  /** 截断后实际发给模型的消息 */
-  messages: Message[]
-  /** 被丢弃的消息数 */
-  truncatedCount: number
-  /** 是否附带摘要 */
-  hasSummary: boolean
+    /** 截断后实际发给模型的消息 */
+    messages: Message[]
+    /** 被丢弃的消息数 */
+    truncatedCount: number
+    /** 是否附带摘要 */
+    hasSummary: boolean
 }
 
 /**
@@ -76,36 +76,36 @@ export interface TruncateResult {
  * 永远保留至少 1 条消息（当前轮对话）
  */
 export function truncateToTokenLimit(
-  messages: Message[],
-  config: ContextConfig = DEFAULT_TEXT_CONFIG,
-  existingSummary?: string
+    messages: Message[],
+    config: ContextConfig = DEFAULT_TEXT_CONFIG,
+    existingSummary?: string
 ): TruncateResult {
-  if (messages.length === 0) {
-    return { messages: [], truncatedCount: 0, hasSummary: false }
-  }
+    if (messages.length === 0) {
+        return { messages: [], truncatedCount: 0, hasSummary: false }
+    }
 
-  // 计算预算：总容量 - 回复预留 - system prompt - 摘要
-  const budget =
-    config.modelMaxTokens -
-    config.reservedForResponse -
-    config.systemPromptTokens -
-    (existingSummary ? countTokens(existingSummary) + 20 : 0)
+    // 计算预算：总容量 - 回复预留 - system prompt - 摘要
+    const budget =
+        config.modelMaxTokens -
+        config.reservedForResponse -
+        config.systemPromptTokens -
+        (existingSummary ? countTokens(existingSummary) + 20 : 0)
 
-  const result = [...messages]
-  let total = countMessagesTokens(result)
-  let truncatedCount = 0
+    const result = [...messages]
+    let total = countMessagesTokens(result)
+    let truncatedCount = 0
 
-  while (total > budget && result.length > 1) {
-    result.shift()
-    total = countMessagesTokens(result)
-    truncatedCount++
-  }
+    while (total > budget && result.length > 1) {
+        result.shift()
+        total = countMessagesTokens(result)
+        truncatedCount++
+    }
 
-  return {
-    messages: result,
-    truncatedCount,
-    hasSummary: !!existingSummary,
-  }
+    return {
+        messages: result,
+        truncatedCount,
+        hasSummary: !!existingSummary,
+    }
 }
 
 /**
@@ -115,10 +115,10 @@ export function truncateToTokenLimit(
  * 说明旧消息在不断丢失，需要用摘要来保留关键信息
  */
 export function shouldSummarize(
-  consecutiveTruncations: number,
-  threshold: number = 3
+    consecutiveTruncations: number,
+    threshold: number = 3
 ): boolean {
-  return consecutiveTruncations >= threshold
+    return consecutiveTruncations >= threshold
 }
 
 // ==================== 构建最终 Prompt ====================
@@ -147,41 +147,41 @@ const DEFAULT_SYSTEM_PROMPT = `你是一个专业的 AI 创作助手，擅长文
  * 3. 滑动窗口内的消息（最近的对话轮次）
  */
 export function buildMessages(
-  history: Message[],
-  currentUserMessage: Message,
-  options?: {
-    config?: ContextConfig
-    summary?: string
-    systemPrompt?: string
-  }
+    history: Message[],
+    currentUserMessage: Message,
+    options?: {
+        config?: ContextConfig
+        summary?: string
+        systemPrompt?: string
+    }
 ): Message[] {
-  const { config = DEFAULT_TEXT_CONFIG, summary, systemPrompt = DEFAULT_SYSTEM_PROMPT } = options ?? {}
+    const { config = DEFAULT_TEXT_CONFIG, summary, systemPrompt = DEFAULT_SYSTEM_PROMPT } = options ?? {}
 
-  // 1. 对历史消息做滑动窗口截断
-  const { messages: truncatedHistory } = truncateToTokenLimit(
-    history,
-    config,
-    summary
-  )
+    // 1. 对历史消息做滑动窗口截断
+    const { messages: truncatedHistory } = truncateToTokenLimit(
+        history,
+        config,
+        summary
+    )
 
-  // 2. 组装最终消息
-  const result: Message[] = [
-    { role: 'system', content: systemPrompt },
-  ]
+    // 2. 组装最终消息
+    const result: Message[] = [
+        { role: 'system', content: systemPrompt },
+    ]
 
-  // 摘要放在 system prompt 之后、对话历史之前
-  if (summary) {
-    result.push({
-      role: 'system',
-      content: `<对话摘要>${summary}</对话摘要>`,
-    })
-  }
+    // 摘要放在 system prompt 之后、对话历史之前
+    if (summary) {
+        result.push({
+            role: 'system',
+            content: `<对话摘要>${summary}</对话摘要>`,
+        })
+    }
 
-  // 历史对话
-  result.push(...truncatedHistory)
+    // 历史对话
+    result.push(...truncatedHistory)
 
-  // 当前用户消息
-  result.push(currentUserMessage)
+    // 当前用户消息
+    result.push(currentUserMessage)
 
-  return result
+    return result
 }

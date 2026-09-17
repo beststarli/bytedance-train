@@ -17,10 +17,9 @@ import {
 } from "lucide-react"
 import { FeedSort, getFeed, getFeedWork, toggleFeedReaction } from "@/api/feed"
 import { getHotNews } from "@/api/discovery"
-import { cn } from "@/lib/utils"
+import { cn, resolveAssetUrl } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { resolveAssetUrl } from "@/lib/asset-url"
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -45,7 +44,6 @@ interface MainPageProps {
 	onNavigate?: (menu: string) => void
 	mode?: "inspiration"
 	initialData?: HomeInitialData
-	refreshFeedOnMount?: boolean
 }
 
 function abortError() {
@@ -147,7 +145,7 @@ function ArticleMarkdown({ content }: { content: string }) {
 	)
 }
 
-function ContentHome({ onNavigate, initialData, refreshFeedOnMount }: Pick<MainPageProps, "onNavigate" | "initialData" | "refreshFeedOnMount">) {
+function ContentHome({ onNavigate, initialData }: Pick<MainPageProps, "onNavigate" | "initialData">) {
 	const [articles, setArticles] = useState<FeedItem[]>(initialData?.articles ?? [])
 	const [loading, setLoading] = useState(!initialData)
 	const [loadingMore, setLoadingMore] = useState(false)
@@ -187,7 +185,7 @@ function ContentHome({ onNavigate, initialData, refreshFeedOnMount }: Pick<MainP
 	}, [])
 
 	useEffect(() => {
-		if (!initialSortHandled.current && initialData && sort === "new" && !refreshFeedOnMount) {
+		if (!initialSortHandled.current && initialData && sort === "new") {
 			initialSortHandled.current = true
 			return
 		}
@@ -216,7 +214,7 @@ function ContentHome({ onNavigate, initialData, refreshFeedOnMount }: Pick<MainP
 		return () => {
 			cancelled = true
 		}
-	}, [initialData, refreshFeedOnMount, sort])
+	}, [initialData, sort])
 
 	const loadMore = useCallback(async () => {
 		if (loading || loadingMoreRef.current || !hasMore) return
@@ -495,7 +493,7 @@ function InspirationView({ onNavigate }: Pick<MainPageProps, "onNavigate">) {
 	)
 }
 
-export default function MainPage({ onNavigate, mode, initialData, refreshFeedOnMount }: MainPageProps) {
+export default function MainPage({ onNavigate, mode, initialData }: MainPageProps) {
 	if (mode === "inspiration") return <InspirationView onNavigate={onNavigate} />
-	return <ContentHome initialData={initialData} refreshFeedOnMount={refreshFeedOnMount} onNavigate={onNavigate} />
+	return <ContentHome initialData={initialData} onNavigate={onNavigate} />
 }

@@ -24,3 +24,37 @@ export function createClientId() {
 
   return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
 }
+
+export function resolveAssetUrl(url?: string | null) {
+	if (!url) return ""
+	if (url.startsWith("/api/content/assets/") || url.startsWith("/uploads/")) return url
+	try {
+		const parsed = new URL(url)
+		if (["localhost", "127.0.0.1"].includes(parsed.hostname) && parsed.port === "9000") {
+			const match = parsed.pathname.match(/\/(?:[^/]+)\/(avatars|materials)\/(.+)$/)
+			if (match) return `/api/content/assets/${match[1]}/${match[2]}`
+		}
+	} catch {
+		// 非标准 URL 保持原样，由图片自身的降级样式处理。
+	}
+	return url
+}
+
+/**
+ * 将本地 File 异步读取为 base64 Data URL（可用于图片预览或上传）。
+ */
+export function fileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+// 计算素材库中素材文件的大小，返回格式化后的字符串。
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return bytes + 'B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
+}

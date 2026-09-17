@@ -17,6 +17,7 @@ let authGeneration = 0
 export async function refreshAccessToken() {
     if (!refreshPromise) {
         const requestGeneration = authGeneration
+        // 后端会销毁旧的refresh token并发放新的refresh token和access token，前端Zustand内存存新的access token和user信息
         refreshPromise = fetch(`${API_BASE}/api/auth/refresh`, {
             method: 'POST',
             credentials: 'include',
@@ -27,7 +28,7 @@ export async function refreshAccessToken() {
             }
             const data = await res.json()
             if (requestGeneration !== authGeneration) return null
-            useAuthStore.getState().setAuth(data.user, data.accessToken)
+            useAuthStore.getState().setAuth(data.user, data.accessToken)    // 前端Zustand内存存新的access token和user信息
             return data.accessToken as string
         }).catch(() => {
             useAuthStore.getState().logout()
@@ -39,6 +40,7 @@ export async function refreshAccessToken() {
     return refreshPromise
 }
 
+// 对携带access token的fetch请求进行封装
 async function request(path: string, options: RequestInit | undefined, token: string | null) {
     return fetch(`${API_BASE}${path}`, {
         ...options,
@@ -70,12 +72,13 @@ export async function apiResponse(path: string, options?: RequestInit): Promise<
     let token = useAuthStore.getState().token
     let res = await request(path, options, token)
 
+    // 对封装的request进行401处理，尝试刷新access token后重试一次
     if (res.status === 401 && path !== '/api/auth/refresh') {
         token = await refreshAccessToken()
-        if (token) res = await request(path, options, token)
+        if (token) {
+            res = await request(path, options, token)
+        }
     }
-
-
     return res
 }
 

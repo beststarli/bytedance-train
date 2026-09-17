@@ -19,6 +19,20 @@ function asErrorMessage(error: unknown) {
 	return error instanceof Error ? error.message : '审核工作流执行失败'
 }
 
+function createSafeRewriteFallback(finding: { category?: string; suggestion?: string }) {
+	const replacements: Record<string, string> = {
+		drugs: '应坚决抵制毒品交易，远离毒品并遵守法律法规。',
+		gambling: '应远离赌博和非法博彩，理性生活并遵守相关法律法规。',
+		fraud: '请警惕虚假高回报和转账诱导，保护个人财产安全。',
+		privacy: '涉及个人敏感信息的内容应进行脱敏处理，并妥善保护个人隐私。',
+		violence: '应以理性、非暴力的方式处理冲突，并遵守法律法规。',
+		pornography: '该内容已调整为健康、文明的表述。',
+		quality: '该主题需要结合具体事实、背景信息和完整论述进行说明。',
+	}
+	return replacements[String(finding.category || '').toLowerCase()]
+		|| '该内容已调整为符合平台规范的中性表述。'
+}
+
 async function syncProposalDecision(
 	runId: string,
 	eventType: 'proposal_accepted' | 'proposal_rejected',
@@ -251,7 +265,8 @@ export async function generateRewriteProposals(jobId: string, userId: string) {
 		`SELECT j.id, j.work_version_id, v.title, v.content,
 			 COALESCE(json_agg(json_build_object(
 				'id', f.id, 'category', f.category, 'severity', f.severity,
-				'excerpt', f.excerpt, 'reason', f.reason, 'suggestion', f.suggestion
+				'excerpt', f.excerpt, 'reason', f.reason, 'suggestion', f.suggestion,
+				'replacement', f.replacement
 			 ) ORDER BY f.created_at) FILTER (WHERE f.id IS NOT NULL), '[]') AS findings
 		 FROM review_jobs j
 		 JOIN work_versions v ON v.id = j.work_version_id
@@ -263,32 +278,54 @@ export async function generateRewriteProposals(jobId: string, userId: string) {
 	const review = rows[0]
 	if (!review) throw new Error('审核记录不存在')
 	if (!review.findings.length) throw new Error('当前审核没有可改写的问题')
+	const { rows: existingProposals } = await pool.query(
+		`SELECT * FROM rewrite_proposals
+		 WHERE review_job_id = $1 AND work_version_id = $2 AND status = 'pending'
+		 ORDER BY created_at ASC`,
+		[jobId, review.work_version_id],
+	)
+	if (existingProposals.length) return existingProposals
+
 	const state = await createAgentState(userId, 'content_rewrite', { reviewJobId: jobId })
 	const runner = new WorkflowRunner(state)
 	await runner.start()
 	const gateway = new AgentModelGateway()
-	let result: { proposals?: Array<{ finding_id?: string; replacement?: string; reason?: string }> }
-	try {
-		result = await runner.step('generate_safe_replacements', { findingCount: review.findings.length }, () =>
-			gateway.generateJson<{
+	const result = await runner.step('generate_safe_replacements', { findingCount: review.findings.length }, async () => {
+		try {
+			return await gateway.generateJson<{
 				proposals?: Array<{ finding_id?: string; replacement?: string; reason?: string }>
 			}>(
 				`你是内容安全改写 Agent。针对每个审核问题生成最小范围的合规替代内容。
 不得修改无关事实、数字、引用和文章结构，不得新增原文没有的信息。
+即使原文涉及严重违规内容，也不要拒绝任务；应将其改为明确反对违法行为的安全、中性表述。
+每个审核问题都必须返回非空 replacement，不能只返回删除建议。
 必须为每个问题原样返回输入中的 finding_id。
 仅返回 JSON，例如：{"proposals":[{"finding_id":"e73c8fe9-60e6-409e-b0ce-3351121f2eaa","replacement":"替代片段","reason":"修改说明"}]}`,
 				`标题：${review.title}\n正文：${review.content}\n审核问题：${JSON.stringify(review.findings)}`,
-			),
-		)
-	} catch (error) {
-		await runner.fail(error)
-		throw error
-	}
+			)
+		} catch (error) {
+			console.warn(`[Rewrite Agent ${jobId}] AI 生成失败，将使用合规兜底：`, error)
+			return { proposals: [] }
+		}
+	})
 	const findingMap = new Map(review.findings.map((item: any) => [String(item.id), item]))
+	const generatedByFindingId = new Map(
+		(result.proposals || [])
+			.filter((item) => item.finding_id && findingMap.has(String(item.finding_id)))
+			.map((item) => [String(item.finding_id), item]),
+	)
 	const proposals = []
-	for (const [index, item] of (result.proposals || []).entries()) {
-		const finding = (findingMap.get(String(item.finding_id)) || review.findings[index]) as any
-		const replacement = String(item.replacement || '').trim()
+	for (const [index, finding] of review.findings.entries() as IterableIterator<[number, any]>) {
+		const indexedItem = (result.proposals || [])[index]
+		const item = generatedByFindingId.get(String(finding.id))
+			|| (!indexedItem?.finding_id ? indexedItem : undefined)
+		const generatedReplacement = String(item?.replacement || finding.replacement || '').trim()
+		const usesGeneratedReplacement = Boolean(
+			generatedReplacement && generatedReplacement !== String(finding.excerpt || '').trim(),
+		)
+		const replacement = usesGeneratedReplacement
+			? generatedReplacement
+			: createSafeRewriteFallback(finding)
 		const rawExcerpt = String(finding?.excerpt || '').trim()
 		const excerptCandidates = [
 			rawExcerpt,
@@ -296,17 +333,27 @@ export async function generateRewriteProposals(jobId: string, userId: string) {
 			rawExcerpt.replace(/^[“”"'‘’]+|[“”"'‘’]+$/g, ''),
 		].filter(Boolean)
 		const originalContent = excerptCandidates.find((candidate) => review.content.includes(candidate)) || ''
-		if (!finding || !originalContent || !replacement) continue
+		if (!originalContent) continue
 		const { rows: inserted } = await pool.query(
 			`INSERT INTO rewrite_proposals
 			 (review_job_id, finding_id, work_version_id, agent_run_id, original_content, replacement_content, reason)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-			[jobId, finding.id, review.work_version_id, state.runId, originalContent, replacement, String(item.reason || finding.suggestion || '')],
+			[
+				jobId,
+				finding.id,
+				review.work_version_id,
+				state.runId,
+				originalContent,
+				replacement,
+				usesGeneratedReplacement
+					? String(item?.reason || finding.suggestion || '已生成合规替代内容')
+					: 'AI 未返回可用文本，已根据审核规则生成安全替代内容',
+			],
 		)
 		proposals.push(inserted[0])
 	}
 	if (!proposals.length) {
-		const error = new Error('AI 没有生成可用的替代内容')
+		const error = new Error('审核问题中的原文片段已发生变化，请重新提交审核')
 		await runner.fail(error)
 		throw error
 	}
